@@ -1,0 +1,21 @@
+# Template FACOLTATIVO — copiare in /etc/systemd/system/meshngrok.service
+# Serve solo per l'accesso remoto via ngrok. Richiede un account ngrok:
+#   1) installa ngrok, 2) `ngrok config add-authtoken <IL_TUO_TOKEN>`
+#   3) (opz.) registra un dominio statico gratuito e mettilo qui sotto.
+[Unit]
+Description=Meshlogger - tunnel ngrok per accesso remoto
+After=network-online.target meshweb.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+# Con dominio statico:
+ExecStart=/usr/local/bin/ngrok http --url=<IL_TUO_DOMINIO>.ngrok-free.dev 8080
+# Senza dominio statico (URL casuale a ogni avvio):
+#   ExecStart=/usr/local/bin/ngrok http 8080
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

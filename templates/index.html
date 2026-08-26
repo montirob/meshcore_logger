@@ -1,0 +1,949 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MeshCore · Ambiente</title>
+<link rel="stylesheet" href="/static/leaflet.css">
+<script src="/static/chart.umd.min.js"></script>
+<script src="/static/hammer.min.js"></script>
+<script src="/static/chartjs-plugin-zoom.min.js"></script>
+<script src="/static/leaflet.js"></script>
+<style>
+  :root{
+    color-scheme: light;
+    --plane:#f9f9f7; --surface:#fcfcfb; --ink:#0b0b0b; --ink2:#52514e; --muted:#898781;
+    --grid:#e1e0d9; --axis:#c3c2b7; --border:rgba(11,11,11,0.10);
+    --temp:#eb6834; --hum:#2a78d6; --pres:#1baf7a; --dew:#4a3aa7;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      color-scheme: dark;
+      --plane:#0d0d0d; --surface:#1a1a19; --ink:#fff; --ink2:#c3c2b7; --muted:#898781;
+      --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,0.10);
+      --temp:#d95926; --hum:#3987e5; --pres:#199e70; --dew:#9085e9;
+    }
+  }
+  :root[data-theme="dark"]{
+    color-scheme: dark;
+    --plane:#0d0d0d; --surface:#1a1a19; --ink:#fff; --ink2:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,0.10);
+    --temp:#d95926; --hum:#3987e5; --pres:#199e70; --dew:#9085e9;
+  }
+  *{box-sizing:border-box}
+  [hidden]{display:none!important}
+  body{margin:0;background:var(--plane);color:var(--ink);
+       font-family:system-ui,-apple-system,"Segoe UI",sans-serif;line-height:1.4}
+  .wrap{max-width:1000px;margin:0 auto;padding:20px 16px 60px}
+  header{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:4px}
+  h1{font-size:20px;margin:0;font-weight:650}
+  .sub{color:var(--ink2);font-size:13px;margin:2px 0 18px}
+  .btn{background:var(--surface);color:var(--ink2);border:1px solid var(--border);
+       border-radius:8px;padding:6px 10px;font-size:13px;cursor:pointer}
+  .btn:hover{color:var(--ink)}
+  .tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:22px}
+  @media(max-width:720px){.tiles{grid-template-columns:repeat(2,1fr)}}
+  @media(max-width:420px){.tiles{grid-template-columns:1fr}}
+  .tile{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 16px}
+  .tile .lbl{font-size:12px;color:var(--ink2);display:flex;align-items:center;gap:6px}
+  .dot{width:9px;height:9px;border-radius:50%;display:inline-block}
+  .tile .val{font-size:30px;font-weight:600;margin-top:6px;letter-spacing:-0.5px}
+  .tile .unit{font-size:14px;color:var(--muted);font-weight:500;margin-left:3px}
+  .ranges{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px}
+  .ranges .btn.active{background:var(--ink);color:var(--plane);border-color:var(--ink)}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:12px;
+        padding:12px 14px 8px;margin-bottom:16px}
+  .card h2{font-size:14px;margin:0 0 8px;font-weight:600;display:flex;align-items:center;gap:7px}
+  .chartbox{position:relative;height:210px}
+  h3.sec{font-size:16px;margin:28px 0 10px;font-weight:650}
+  .tablewrap{background:var(--surface);border:1px solid var(--border);border-radius:12px;
+             padding:6px 4px;margin-bottom:18px;overflow-x:auto}
+  .tcap{font-size:13px;font-weight:600;color:var(--ink2);padding:8px 10px 4px}
+  table.stats{border-collapse:collapse;width:100%;font-size:12.5px;font-variant-numeric:tabular-nums;min-width:640px}
+  table.stats th,table.stats td{padding:5px 9px;text-align:right;border-bottom:1px solid var(--grid);white-space:nowrap}
+  table.stats th:first-child,table.stats td:first-child{text-align:left}
+  table.stats thead tr:first-child th{border-bottom:1px solid var(--axis);color:var(--ink2)}
+  table.stats thead tr:nth-child(2) th{font-weight:500;color:var(--muted);font-size:11px}
+  table.stats tbody tr:hover{background:color-mix(in srgb, var(--ink) 4%, transparent)}
+  .g-temp{color:var(--temp)} .g-hum{color:var(--hum)} .g-pres{color:var(--pres)} .g-dew{color:var(--dew)}
+  details{margin-top:6px;color:var(--ink2);font-size:13px}
+  .rawtbl{border-collapse:collapse;width:100%;font-size:12px;margin-top:8px;font-variant-numeric:tabular-nums}
+  .rawtbl th,.rawtbl td{border-bottom:1px solid var(--grid);padding:4px 8px;text-align:right}
+  .rawtbl th:first-child,.rawtbl td:first-child{text-align:left}
+  .foot{color:var(--muted);font-size:12px;margin-top:12px}
+  .tabs{display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:18px}
+  .tab{background:none;border:none;border-bottom:2px solid transparent;color:var(--ink2);
+       font-size:14px;font-weight:600;padding:8px 14px;cursor:pointer;margin-bottom:-1px}
+  .tab:hover{color:var(--ink)}
+  .tab.active{color:var(--ink);border-bottom-color:var(--hum)}
+  .msglist{display:flex;flex-direction:column;gap:2px;max-height:70vh;overflow-y:auto}
+  .chatwin{height:46vh;min-height:240px;max-height:none;border:1px solid var(--border);border-radius:10px;padding:6px 8px;background:var(--plane)}
+  .msg{cursor:pointer}
+  .msg:hover{background:color-mix(in srgb,var(--ink) 5%,transparent);border-radius:6px}
+  .msg .quote{grid-column:1/-1;font-size:11px;color:var(--muted);border-left:2px solid var(--hum);
+      padding-left:6px;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .msg .route{grid-column:1/-1;font-size:11px;color:var(--muted);margin-top:2px;word-break:break-word}
+  .replybar{display:flex;align-items:center;gap:8px;background:color-mix(in srgb,var(--hum) 12%,transparent);
+      border-left:3px solid var(--hum);border-radius:6px;padding:6px 10px;margin-top:8px;font-size:12px}
+  .replybar .rb-txt{flex:1;color:var(--ink2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .replybar .rb-x{cursor:pointer;color:var(--muted);font-weight:700;padding:0 6px}
+  .replybar .rb-x:hover{color:var(--ink)}
+  .msg{display:grid;grid-template-columns:64px 150px 1fr;gap:10px;padding:7px 6px;
+       border-bottom:1px solid var(--grid);font-size:13px;align-items:baseline}
+  @media(max-width:560px){.msg{grid-template-columns:52px 1fr}.msg .who{grid-column:2}.msg .txt{grid-column:1/-1}}
+  .msg .when{color:var(--muted);font-variant-numeric:tabular-nums;font-size:12px}
+  .msg .who{color:var(--hum);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .msg .txt{color:var(--ink);word-break:break-word}
+  .msg .ch{color:var(--muted);font-size:11px}
+  .empty{color:var(--muted);font-size:13px;padding:20px 6px;text-align:center}
+  .sendrow{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .inp{background:var(--plane);color:var(--ink);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:14px}
+  #send-text{flex:1;min-width:180px}
+  .btn.primary{background:var(--hum);color:#fff;border-color:var(--hum);font-weight:600}
+  .btn.primary:hover{filter:brightness(1.08);color:#fff}
+  .sendstatus{font-size:12px;color:var(--muted);margin-top:8px;min-height:16px}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr}}
+  .ranklist{display:flex;flex-direction:column;gap:2px}
+  .rank{display:flex;justify-content:space-between;gap:10px;font-size:13px;padding:5px 0;border-bottom:1px solid var(--grid)}
+  .rank .rn{color:var(--ink2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .rank .rv{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .msg.out{background:color-mix(in srgb,var(--hum) 13%,transparent);border-radius:6px}
+  .msg.out .who{color:var(--pres)}
+  .records{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:18px}
+  .rec{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:8px 11px;font-size:12px;min-width:96px}
+  .rec .rl{color:var(--muted)}
+  .rec .rvv{color:var(--ink);font-weight:600;font-size:15px;margin-top:2px}
+  .rec .rd{color:var(--muted);font-size:11px;margin-top:1px}
+  .maplayout{display:grid;grid-template-columns:300px 1fr;gap:16px}
+  @media(max-width:720px){.maplayout{grid-template-columns:1fr}}
+  .mapside .nodelist{display:flex;flex-direction:column;max-height:520px;overflow-y:auto;
+      background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:4px}
+  .noderow{display:flex;align-items:center;gap:8px;padding:7px 8px;border-bottom:1px solid var(--grid);font-size:13px}
+  .noderow:last-child{border-bottom:none}
+  .noderow.sel{background:color-mix(in srgb,var(--pres) 14%,transparent);border-radius:8px}
+  .noderow .nname{flex:1;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink)}
+  .noderow .nname:hover{color:var(--pres)}
+  .noderow .nmeta{color:var(--muted);font-size:11px;white-space:nowrap}
+  .noderow input.trk{cursor:pointer;width:16px;height:16px;flex:none}
+  #map{height:520px;border-radius:12px;border:1px solid var(--border);z-index:0}
+  .leaflet-popup-content{font-size:13px;line-height:1.4}
+  .leaflet-container{font-family:inherit}
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:1000;padding:16px}
+  .modal-card{background:var(--surface);border:1px solid var(--border);border-radius:14px;max-width:430px;width:100%;max-height:85vh;overflow:auto;padding:16px 18px;box-shadow:0 12px 44px rgba(0,0,0,.35)}
+  .modal-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+  .modal-head span:first-child{font-size:16px;font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .modal-x{cursor:pointer;color:var(--muted);font-weight:700;font-size:18px;padding-left:10px}
+  .modal-x:hover{color:var(--ink)}
+  .nm-row{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--grid);font-size:13px}
+  .nm-row .k{color:var(--ink2);white-space:nowrap}
+  .nm-row .v{color:var(--ink);font-weight:600;text-align:right;word-break:break-word}
+  .modal .btn.primary{margin-top:12px;width:100%}
+  .badge{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:600;white-space:nowrap}
+  .b-Chat{background:color-mix(in srgb,var(--hum) 20%,transparent);color:var(--hum)}
+  .b-Repeater{background:color-mix(in srgb,var(--pres) 22%,transparent);color:var(--pres)}
+  .b-Room{background:color-mix(in srgb,var(--dew) 22%,transparent);color:var(--dew)}
+  .b-Sensor{background:color-mix(in srgb,var(--temp) 22%,transparent);color:var(--temp)}
+  .b-other{background:color-mix(in srgb,var(--muted) 22%,transparent);color:var(--ink2)}
+  .pingbtn{font-size:12px;padding:3px 8px}
+  .pingres{font-size:11px;color:var(--muted);margin-left:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Stazione ambientale MeshCore</h1>
+      <div class="sub">{{ node }} · aggiornamento ogni minuto</div>
+    </div>
+    <div style="display:flex;gap:6px">
+      <button class="btn" id="zreset" title="Ripristina zoom">⤢ Reset zoom</button>
+      <button class="btn" id="setkey" title="Imposta chiave API">🔑</button>
+      <button class="btn" id="theme">◐ Tema</button>
+    </div>
+  </header>
+
+  <div class="tabs" id="tabs">
+    <button class="tab active" data-tab="charts">📈 Grafici</button>
+    <button class="tab" data-tab="messages">💬 Messaggi</button>
+    <button class="tab" data-tab="map">🗺️ Mappa</button>
+    <button class="tab" data-tab="net">🛰️ Rete</button>
+  </div>
+
+  <section id="tab-charts">
+  <div class="tiles">
+    <div class="tile"><div class="lbl"><span class="dot" style="background:var(--temp)"></span>Temperatura</div><div class="val" id="v-temp">–<span class="unit">°C</span></div></div>
+    <div class="tile"><div class="lbl"><span class="dot" style="background:var(--hum)"></span>Umidità</div><div class="val" id="v-hum">–<span class="unit">%</span></div></div>
+    <div class="tile"><div class="lbl"><span class="dot" style="background:var(--pres)"></span>Pressione</div><div class="val" id="v-pres">–<span class="unit">hPa</span></div></div>
+    <div class="tile"><div class="lbl"><span class="dot" style="background:var(--dew)"></span>Punto di rugiada</div><div class="val" id="v-dew">–<span class="unit">°C</span></div></div>
+  </div>
+
+  <div class="ranges" id="ranges">
+    <button class="btn" data-h="1">1 ora</button>
+    <button class="btn" data-h="6">6 ore</button>
+    <button class="btn active" data-h="24">24 ore</button>
+    <button class="btn" data-h="168">7 giorni</button>
+    <button class="btn" data-h="720">30 giorni</button>
+    <button class="btn" data-h="0">Tutto</button>
+  </div>
+
+  <div class="records" id="records"></div>
+
+  <div class="card"><h2><span class="dot" style="background:var(--temp)"></span>Temperatura (°C)</h2><div class="chartbox"><canvas id="c-temp"></canvas></div></div>
+  <div class="card"><h2><span class="dot" style="background:var(--hum)"></span>Umidità relativa (%)</h2><div class="chartbox"><canvas id="c-hum"></canvas></div></div>
+  <div class="card"><h2><span class="dot" style="background:var(--pres)"></span>Pressione barometrica (hPa)</h2><div class="chartbox"><canvas id="c-pres"></canvas></div></div>
+  <div class="card"><h2><span class="dot" style="background:var(--dew)"></span>Punto di rugiada (°C)</h2><div class="chartbox"><canvas id="c-dew"></canvas></div></div>
+
+  <h3 class="sec">Statistiche (media · min · max)</h3>
+  <div class="tablewrap"><div class="tcap">Per giorno</div><table class="stats"><thead id="th-day"></thead><tbody id="tb-day"></tbody></table></div>
+  <div class="tablewrap"><div class="tcap">Per mese</div><table class="stats"><thead id="th-month"></thead><tbody id="tb-month"></tbody></table></div>
+  <div class="tablewrap"><div class="tcap">Per anno</div><table class="stats"><thead id="th-year"></thead><tbody id="tb-year"></tbody></table></div>
+
+  <details>
+    <summary>Mostra letture grezze (ultime 30)</summary>
+    <table class="rawtbl" id="tbl"><thead><tr><th>Ora</th><th>Temp °C</th><th>Umidità %</th><th>Pressione hPa</th><th>Rugiada °C</th></tr></thead><tbody></tbody></table>
+  </details>
+  </section>
+
+  <section id="tab-messages" hidden>
+    <div class="tiles" id="mesh-tiles"></div>
+
+    <div class="card">
+      <h2><span class="dot" style="background:var(--hum)"></span>Chat mesh</h2>
+      <div class="tabs" id="msg-channels" style="margin-bottom:10px"></div>
+      <div id="msglist" class="msglist chatwin"><div class="empty">Caricamento…</div></div>
+      <div id="reply-banner" class="replybar" hidden></div>
+      <div class="sendrow" style="margin-top:10px">
+        <input id="send-text" class="inp" type="text" maxlength="200" placeholder="Scrivi un messaggio nel canale selezionato…">
+        <button class="btn primary" id="send-btn">Invia</button>
+      </div>
+      <div class="sendstatus" id="send-status"></div>
+    </div>
+
+    <div class="grid2">
+      <div class="card"><h2>🏆 Nodi più attivi</h2><div id="top-senders" class="ranklist"></div></div>
+      <div class="card">
+        <h2>📡 Canali abilitati</h2><div id="chan-list" class="ranklist"></div>
+        <h2 style="margin-top:14px">🔧 Hardware più diffuso</h2><div id="top-hw" class="ranklist"></div>
+      </div>
+    </div>
+    <div class="hint" style="margin-top:6px">Il messaggio viene inviato sul canale selezionato qui sopra. I tuoi messaggi inviati appaiono evidenziati.</div>
+  </section>
+
+  <section id="tab-map" hidden>
+    <div class="maplayout">
+      <div class="mapside">
+        <div class="ranges" id="map-filter" style="margin-bottom:8px">
+          <button class="btn active" data-f="tracked">Tracciati</button>
+          <button class="btn" data-f="pos">Con posizione</button>
+          <button class="btn" data-f="all">Tutti</button>
+        </div>
+        <div style="margin-bottom:8px">
+          <label style="font-size:12px;color:var(--ink2)">Nascondi più vecchi di: <b id="age-label">30 giorni</b></label>
+          <input type="range" id="age-slider" min="0" max="9" value="9" step="1" style="width:100%;accent-color:var(--hum)">
+        </div>
+        <input id="node-search" class="inp" placeholder="Cerca nodo…" style="width:100%;margin-bottom:8px">
+        <div class="hint" style="margin:0 0 8px">Spunta <b>traccia</b> per registrare gli spostamenti (storico 30 giorni). Clicca un nodo per vederne il percorso.</div>
+        <div id="node-list" class="nodelist"><div class="empty">Caricamento…</div></div>
+      </div>
+      <div class="mapmain">
+        <div id="map"></div>
+        <div class="card" id="track-log-card" style="margin-top:12px" hidden>
+          <h2 id="track-log-title">Percorso</h2>
+          <div id="track-log" class="msglist" style="max-height:220px"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-net" hidden>
+    <div class="card">
+      <h2>🛰️ Azioni MeshCore</h2>
+      <div class="sendrow">
+        <button class="btn primary" id="advert-btn">📢 Advertise ora</button>
+        <label style="font-size:13px;color:var(--ink2);display:flex;align-items:center;gap:6px"><input type="checkbox" id="advert-flood"> flood (propaga a tutta la mesh)</label>
+      </div>
+      <div class="sendrow" style="margin-top:10px;align-items:center">
+        <span style="font-size:13px;color:var(--ink2)">Advertise automatico ogni</span>
+        <input id="autoadv-min" class="inp" type="number" min="0" step="1" style="width:80px" value="0">
+        <span style="font-size:13px;color:var(--ink2)">minuti (0 = disattivato)</span>
+        <button class="btn" id="autoadv-save">Salva</button>
+      </div>
+      <div class="sendstatus" id="net-status"></div>
+      <details style="margin-top:8px"><summary>Log azioni recenti</summary>
+        <div id="cmd-log" class="ranklist" style="margin-top:6px"></div>
+      </details>
+    </div>
+
+    <div class="card">
+      <h2>📡 Nodi della rete</h2>
+      <div class="ranges" id="net-filter" style="margin-bottom:8px">
+        <button class="btn active" data-t="all">Tutti</button>
+        <button class="btn" data-t="Chat">Client</button>
+        <button class="btn" data-t="Repeater">Ripetitori</button>
+        <button class="btn" data-t="Room">Room</button>
+        <button class="btn" data-t="Sensor">Sensori</button>
+      </div>
+      <input id="net-search" class="inp" placeholder="Cerca nodo…" style="width:100%;margin-bottom:8px">
+      <div class="tablewrap">
+        <table class="stats" id="net-table" style="min-width:520px">
+          <thead><tr><th>Nodo</th><th>Tipo</th><th>Ultimo</th><th>Hop</th><th>Ping</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <div class="foot" id="foot"></div>
+</div>
+
+<div id="node-modal" class="modal" hidden>
+  <div class="modal-card">
+    <div class="modal-head"><span id="nm-title">Nodo</span><span class="modal-x" id="nm-x" title="Chiudi">✕</span></div>
+    <div id="nm-body"></div>
+  </div>
+</div>
+
+<script>
+if (window.ChartZoom) Chart.register(window.ChartZoom);
+const css = k => getComputedStyle(document.documentElement).getPropertyValue(k).trim();
+const nf = (x,d) => (x!=null && !isNaN(x)) ? Number(x).toFixed(d) : '—';
+let curHours = 24;
+let keyPrompted = false;
+
+function apiUrl(path){
+  const k = localStorage.getItem('apikey');
+  if(!k) return path;
+  return path + (path.includes('?')?'&':'?') + 'key=' + encodeURIComponent(k);
+}
+async function apiFetch(path){
+  const r = await fetch(apiUrl(path), {headers:{'ngrok-skip-browser-warning':'true'}});
+  if(r.status === 401){
+    if(!keyPrompted){ keyPrompted = true; promptKey(); }
+    throw new Error('unauthorized');
+  }
+  return r;
+}
+function promptKey(){
+  const cur = localStorage.getItem('apikey') || '';
+  const k = prompt('Chiave API richiesta per accedere ai dati:', cur);
+  if(k !== null){ localStorage.setItem('apikey', k); location.reload(); }
+}
+
+function fmtTime(ms, hours){
+  const d = new Date(ms);
+  const p = n => String(n).padStart(2,'0');
+  if(hours && hours <= 24) return p(d.getHours())+':'+p(d.getMinutes());
+  return p(d.getDate())+'/'+p(d.getMonth()+1)+' '+p(d.getHours())+':'+p(d.getMinutes());
+}
+
+function makeChart(id, series, unit, showLegend){
+  const ctx = document.getElementById(id);
+  const datasets = series.map(s => ({
+    label: s.label, data: [], parsing:false,
+    borderColor: css(s.colorVar) + (s.alpha||''),
+    backgroundColor: s.fill ? css(s.colorVar)+'22' : 'transparent',
+    borderWidth: s.width||2, pointRadius:0, pointHoverRadius:5, tension:0.25,
+    fill: !!s.fill, spanGaps:true, order: s.order||0,
+    _colorVar:s.colorVar, _alpha:s.alpha||'', _fill:!!s.fill
+  }));
+  return new Chart(ctx, {
+    type:'line',
+    data:{ datasets },
+    options:{
+      responsive:true, maintainAspectRatio:false, animation:false,
+      interaction:{ mode:'index', intersect:false },
+      plugins:{
+        legend:{ display:!!showLegend, labels:{ color:css('--ink2'), boxWidth:14, boxHeight:2, usePointStyle:true, pointStyle:'line' } },
+        tooltip:{ callbacks:{
+          title: it => fmtTime(it[0].parsed.x, curHours),
+          label: it => ' '+it.dataset.label+': '+it.parsed.y.toFixed(2)+' '+unit } },
+        zoom:{
+          zoom:{ wheel:{enabled:true}, pinch:{enabled:true}, drag:{enabled:false}, mode:'xy' },
+          pan:{ enabled:true, mode:'xy' }
+        } },
+      scales:{
+        x:{ type:'linear', ticks:{ color:css('--muted'), maxRotation:0, autoSkip:true, maxTicksLimit:8,
+             callback:v=>fmtTime(v,curHours) },
+            grid:{ color:css('--grid') }, border:{ color:css('--axis') } },
+        y:{ ticks:{ color:css('--muted') }, grid:{ color:css('--grid') }, border:{ color:css('--axis') } }
+      }
+    }
+  });
+}
+const charts = {
+  temp: makeChart('c-temp',[
+    {label:'Temperatura', colorVar:'--temp', width:1.2, alpha:'59', fill:true, order:2},
+    {label:'Media 10 min', colorVar:'--temp', width:2.6, fill:false, order:1}
+  ],'°C',true),
+  hum:  makeChart('c-hum',[{label:'Umidità',colorVar:'--hum',width:2,fill:true}],'%',false),
+  pres: makeChart('c-pres',[
+    {label:'Pressione', colorVar:'--pres', width:1.2, alpha:'59', fill:true, order:2},
+    {label:'Media 10 min', colorVar:'--pres', width:2.6, fill:false, order:1}
+  ],'hPa',true),
+  dew:  makeChart('c-dew',[{label:'Punto di rugiada',colorVar:'--dew',width:2,fill:true}],'°C',false),
+};
+
+async function load(){
+  const rows = await (await apiFetch('/api/readings?hours='+curHours)).json();
+  const Traw=[],Tma=[],H=[],Praw=[],Pma=[],D=[];
+  for(const r of rows){ const x=r.ts*1000;
+    Traw.push({x,y:r.temperature}); Tma.push({x,y:r.t_ma});
+    H.push({x,y:r.humidity});
+    Praw.push({x,y:r.pressure}); Pma.push({x,y:r.p_ma});
+    D.push({x,y:r.dew}); }
+  charts.temp.data.datasets[0].data=Traw; charts.temp.data.datasets[1].data=Tma; charts.temp.update();
+  charts.hum.data.datasets[0].data=H;  charts.hum.update();
+  charts.pres.data.datasets[0].data=Praw; charts.pres.data.datasets[1].data=Pma; charts.pres.update();
+  charts.dew.data.datasets[0].data=D;  charts.dew.update();
+  const tb = document.querySelector('#tbl tbody'); tb.innerHTML='';
+  rows.slice(-30).reverse().forEach(r=>{
+    const tr=document.createElement('tr');
+    tr.innerHTML='<td>'+fmtTime(r.ts*1000,0)+'</td><td>'+nf(r.temperature,2)+'</td><td>'+nf(r.humidity,1)+'</td><td>'+nf(r.pressure,2)+'</td><td>'+nf(r.dew,2)+'</td>';
+    tb.appendChild(tr);
+  });
+}
+
+const STAT_HEAD =
+  '<tr><th rowspan="2">Periodo</th>'+
+  '<th colspan="3" class="g-temp">Temp °C</th>'+
+  '<th colspan="3" class="g-hum">Umidità %</th>'+
+  '<th colspan="3" class="g-pres">Pressione hPa</th>'+
+  '<th colspan="3" class="g-dew">Rugiada °C</th>'+
+  '<th rowspan="2">n</th></tr>'+
+  '<tr>'+Array(4).fill('<th>med</th><th>min</th><th>max</th>').join('')+'</tr>';
+
+async function loadStats(period, headId, bodyId){
+  document.getElementById(headId).innerHTML = STAT_HEAD;
+  const rows = await (await apiFetch('/api/stats?period='+period)).json();
+  const tb = document.getElementById(bodyId); tb.innerHTML='';
+  rows.forEach(r=>{
+    const tr=document.createElement('tr');
+    tr.innerHTML =
+      '<td>'+r.period+'</td>'+
+      '<td>'+nf(r.t_avg,1)+'</td><td>'+nf(r.t_min,1)+'</td><td>'+nf(r.t_max,1)+'</td>'+
+      '<td>'+nf(r.h_avg,1)+'</td><td>'+nf(r.h_min,1)+'</td><td>'+nf(r.h_max,1)+'</td>'+
+      '<td>'+nf(r.p_avg,1)+'</td><td>'+nf(r.p_min,1)+'</td><td>'+nf(r.p_max,1)+'</td>'+
+      '<td>'+nf(r.d_avg,1)+'</td><td>'+nf(r.d_min,1)+'</td><td>'+nf(r.d_max,1)+'</td>'+
+      '<td>'+(r.n??'')+'</td>';
+    tb.appendChild(tr);
+  });
+  if(!rows.length){ tb.innerHTML='<tr><td colspan="14" style="text-align:center;color:var(--muted)">nessun dato</td></tr>'; }
+}
+function loadAllStats(){
+  loadStats('day','th-day','tb-day');
+  loadStats('month','th-month','tb-month');
+  loadStats('year','th-year','tb-year');
+}
+
+function fmtDateTime(ms){
+  const d=new Date(ms); const p=n=>String(n).padStart(2,'0');
+  return p(d.getDate())+'/'+p(d.getMonth()+1)+' '+p(d.getHours())+':'+p(d.getMinutes());
+}
+let curMsgChannel = null;
+async function loadMessages(forceBottom){
+  let rows;
+  const chParam = (curMsgChannel!=null) ? ('&channel='+curMsgChannel) : '';
+  try { rows = await (await apiFetch('/api/messages?limit=200'+chParam)).json(); }
+  catch(e){ return; }
+  const el = document.getElementById('msglist');
+  const nearBottom = (el.scrollHeight - el.scrollTop - el.clientHeight) < 80;
+  if(!rows.length){ el.innerHTML='<div class="empty">Nessun messaggio in questo canale.</div>'; return; }
+  el.innerHTML='';
+  const byId={}; rows.forEach(m=>{ if(m.msg_id) byId[m.msg_id]=m; });
+  rows.slice().reverse().forEach(m=>{   // dal più vecchio (in alto) al più recente (in basso)
+    const div=document.createElement('div'); div.className='msg'+(m.outgoing?' out':'');
+    const who = (m.outgoing?'📤 ':'') + (m.from_name || m.from_id || '?');
+    let quote='';
+    if(m.reply_id){
+      const o=byId[m.reply_id];
+      const q = o ? ((o.from_name||o.from_id||'?')+': '+o.text) : 'messaggio precedente';
+      quote='<span class="quote">↩ '+escapeHtml(q)+'</span>';
+    }
+    div.innerHTML=quote+'<span class="when">'+fmtDateTime(m.ts*1000)+'</span>'+
+                  '<span class="who" title="'+(m.from_id||'')+'">'+who+'</span>'+
+                  '<span class="txt"></span>';
+    div.querySelector('.txt').textContent = m.text;
+    if(!m.outgoing && (m.path_len!=null || (m.path_nodes&&m.path_nodes.length))){
+      const snr = (m.snr!=null) ? (' · SNR '+Number(m.snr).toFixed(1)+' dB') : '';
+      const r=document.createElement('span'); r.className='route';
+      if(m.path_nodes && m.path_nodes.length){
+        const hops=m.path_nodes.map(h=> h.name?escapeHtml(h.name):('#'+h.hash)).join(' → ');
+        r.innerHTML='🛤️ '+m.path_nodes.length+' salti: '+hops+snr;
+      } else {
+        r.textContent='🛤️ '+(m.path_len>0?(m.path_len+' salti'):'diretto')+snr;
+      }
+      div.appendChild(r);
+    }
+    if(m.msg_id){ div.title='Clicca per rispondere'; div.addEventListener('click',()=>setReply(m)); }
+    const whoEl=div.querySelector('.who');
+    if(m.from_id){ whoEl.style.cursor='pointer'; whoEl.title='Info nodo';
+      whoEl.addEventListener('click',ev=>{ ev.stopPropagation(); openNodeInfo(m.from_id); }); }
+    el.appendChild(div);
+  });
+  if(forceBottom || nearBottom) el.scrollTop = el.scrollHeight;
+}
+let replyTarget=null;
+function setReply(m){
+  replyTarget={id:m.msg_id, who:(m.from_name||m.from_id||'?'), text:m.text};
+  renderReplyBanner();
+  document.getElementById('send-text').focus();
+}
+function clearReply(){ replyTarget=null; renderReplyBanner(); }
+function renderReplyBanner(){
+  const b=document.getElementById('reply-banner');
+  if(!replyTarget){ b.hidden=true; b.innerHTML=''; return; }
+  b.hidden=false; b.innerHTML='<span class="rb-txt">↩ In risposta a <b></b>: <span class="rb-q"></span></span><span class="rb-x" title="Annulla">✕</span>';
+  b.querySelector('b').textContent=replyTarget.who;
+  b.querySelector('.rb-q').textContent=replyTarget.text;
+  b.querySelector('.rb-x').addEventListener('click', clearReply);
+}
+async function loadChannels(){
+  let rows; try{ rows = await (await apiFetch('/api/channels')).json(); }catch(e){ return; }
+  const cl=document.getElementById('chan-list'); cl.innerHTML='';
+  const mc=document.getElementById('msg-channels'); mc.innerHTML='';
+  if(curMsgChannel==null && rows.length) curMsgChannel=rows[0].idx;
+  rows.forEach(c=>{
+    const d=document.createElement('div'); d.className='rank';
+    d.innerHTML='<span class="rn"></span><span class="rv">ch'+c.idx+' · '+c.role_name+'</span>';
+    d.querySelector('.rn').textContent=c.name; cl.appendChild(d);
+    const b=document.createElement('button'); b.className='tab'+(c.idx===curMsgChannel?' active':'');
+    b.textContent=c.name; b.dataset.ch=c.idx;
+    b.addEventListener('click',()=>{
+      curMsgChannel=c.idx;
+      document.querySelectorAll('#msg-channels .tab').forEach(x=>x.classList.remove('active'));
+      b.classList.add('active');
+      loadMessages(true);
+    });
+    mc.appendChild(b);
+  });
+  if(!rows.length){ cl.innerHTML='<div class="empty">Nessun canale.</div>'; mc.innerHTML=''; }
+}
+async function loadMeshStats(){
+  let s; try{ s = await (await apiFetch('/api/meshstats')).json(); }catch(e){ return; }
+  const T=(lbl,val,sub)=>'<div class="tile"><div class="lbl">'+lbl+'</div><div class="val">'+val+(sub?'<span class="unit">'+sub+'</span>':'')+'</div></div>';
+  document.getElementById('mesh-tiles').innerHTML =
+    T('Nodi totali', s.nodes_total)+
+    T('Attivi 24h', s.nodes_last_day)+
+    T('Con sensore', s.nodes_with_env)+
+    T('Messaggi oggi', s.msg_today);
+  const fill=(id,arr,key)=>{ const el=document.getElementById(id); el.innerHTML='';
+    (arr||[]).forEach(x=>{ const d=document.createElement('div'); d.className='rank';
+      d.innerHTML='<span class="rn"></span><span class="rv">'+x.n+'</span>';
+      d.querySelector('.rn').textContent=x[key]||'?'; el.appendChild(d); });
+    if(!(arr||[]).length) el.innerHTML='<div class="empty">—</div>';
+  };
+  fill('top-senders', s.top_senders, 'name');
+  fill('top-hw', s.top_hw, 'hw');
+}
+async function sendMessage(){
+  const txtEl=document.getElementById('send-text');
+  const text=txtEl.value.trim();
+  const ch=(curMsgChannel!=null)?curMsgChannel:0;
+  const st=document.getElementById('send-status');
+  if(!text){ st.textContent='Scrivi un messaggio.'; return; }
+  st.textContent='Invio in coda…';
+  try{
+    const k=localStorage.getItem('apikey')||'';
+    const r=await fetch('/api/send'+(k?('?key='+encodeURIComponent(k)):''),{
+      method:'POST', headers:{'Content-Type':'application/json','ngrok-skip-browser-warning':'true'},
+      body:JSON.stringify({text, channel:ch, reply_id:(replyTarget?replyTarget.id:null)})
+    });
+    if(r.status===401){ promptKey(); return; }
+    const j=await r.json();
+    if(j.queued){ st.textContent='✓ In coda: verrà trasmesso entro un minuto.'; txtEl.value=''; clearReply(); setTimeout(()=>loadMessages(true),4000); }
+    else st.textContent='Errore: '+(j.error||'invio fallito');
+  }catch(e){ st.textContent='Errore di rete.'; }
+}
+async function loadRecords(){
+  let r; try{ r = await (await apiFetch('/api/records')).json(); }catch(e){ return; }
+  const el=document.getElementById('records'); if(!el) return;
+  const dstr=ts=>{ const d=new Date(ts*1000); const p=n=>String(n).padStart(2,'0'); return p(d.getDate())+'/'+p(d.getMonth()+1)+' '+p(d.getHours())+':'+p(d.getMinutes()); };
+  const arr=v=> v>0?('↑ +'+v):(v<0?('↓ '+v):'→ 0');
+  const rec=(l,val,unit,sub)=> (val==null||val==='')?'':'<div class="rec"><div class="rl">'+l+'</div><div class="rvv">'+val+unit+'</div>'+(sub?'<div class="rd">'+sub+'</div>':'')+'</div>';
+  let h='';
+  if(r.temp_max) h+=rec('Record max',r.temp_max.v.toFixed(1),'°C',dstr(r.temp_max.ts));
+  if(r.temp_min) h+=rec('Record min',r.temp_min.v.toFixed(1),'°C',dstr(r.temp_min.ts));
+  if(r.today&&r.today.temp_max!=null) h+=rec('Oggi T',r.today.temp_min.toFixed(1)+'/'+r.today.temp_max.toFixed(1),'°C','min/max');
+  if(r.trend_1h&&r.trend_1h.temperature!=null) h+=rec('Trend T 1h',arr(r.trend_1h.temperature),'°C');
+  if(r.trend_1h&&r.trend_1h.pressure!=null) h+=rec('Trend P 1h',arr(r.trend_1h.pressure),'hPa');
+  if(r.pres_max) h+=rec('P max',r.pres_max.v.toFixed(1),'hPa',dstr(r.pres_max.ts));
+  if(r.pres_min) h+=rec('P min',r.pres_min.v.toFixed(1),'hPa',dstr(r.pres_min.ts));
+  el.innerHTML=h;
+}
+function ago(ts){ if(!ts) return '?'; const s=Math.floor(Date.now()/1000-ts);
+  if(s<3600) return Math.floor(s/60)+'m'; if(s<86400) return Math.floor(s/3600)+'h'; return Math.floor(s/86400)+'g'; }
+function escapeHtml(s){ return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+const ROLE_MAP={0:'Client',1:'Client Mute',2:'Router',3:'Router Client',4:'Repeater',5:'Tracker',6:'Sensor',7:'TAK',8:'Client Hidden',9:'Lost & Found',10:'TAK Tracker',11:'Router Late'};
+async function openNodeInfo(id){
+  let n=null;
+  try{ const r=await apiFetch('/api/node?id='+encodeURIComponent(id)); n=await r.json(); }catch(e){}
+  if(!n || n.error){ n={node_id:id}; }
+  document.getElementById('nm-title').textContent = n.long_name || n.node_id || 'Nodo';
+  const row=(k,v)=> (v!=null&&v!=='')?('<div class="nm-row"><span class="k">'+k+'</span><span class="v">'+v+'</span></div>'):'';
+  let h='';
+  h+=row('ID', n.node_id);
+  if(n.short_name) h+=row('Sigla', escapeHtml(n.short_name));
+  if(n.hw) h+=row('Hardware', escapeHtml(n.hw));
+  if(n.role!=null&&n.role!==''){
+    const rl=(typeof n.role==='number') ? (ROLE_MAP[n.role]||('#'+n.role))
+             : String(n.role).replace(/_/g,' ').toLowerCase().replace(/\b\w/g,c=>c.toUpperCase());
+    h+=row('Ruolo', rl);
+  }
+  if(n.last_heard) h+=row('Ultimo contatto', ago(n.last_heard)+' fa');
+  if(n.hops!=null) h+=row('Hop di distanza', n.hops);
+  if(n.snr!=null) h+=row('SNR', n.snr+' dB');
+  if(n.battery!=null) h+=row('Batteria', n.battery+'%');
+  if(n.voltage!=null) h+=row('Tensione', n.voltage+' V');
+  if(n.has_env) h+=row('Sensore ambientale', 'sì');
+  if(n.tracked) h+=row('Tracciato', 'sì');
+  const pos = (n.lat!=null&&n.lon!=null) ? {lat:n.lat,lon:n.lon} : (n.last_position||null);
+  if(pos){
+    const url='https://www.openstreetmap.org/?mlat='+pos.lat+'&mlon='+pos.lon+'#map=14/'+pos.lat+'/'+pos.lon;
+    h+=row('Posizione', pos.lat.toFixed(5)+', '+pos.lon.toFixed(5)+' · <a href="'+url+'" target="_blank" rel="noopener">OSM ↗</a>');
+    h+='<button class="btn primary" id="nm-map">Vedi sulla mappa</button>';
+  } else {
+    h+='<div class="hint" style="margin-top:8px">Posizione non disponibile per questo nodo.</div>';
+  }
+  document.getElementById('nm-body').innerHTML=h;
+  const mb=document.getElementById('nm-map');
+  if(mb) mb.addEventListener('click',()=>showNodeOnMap(n.node_id||id));
+  document.getElementById('node-modal').hidden=false;
+}
+function closeNodeInfo(){ document.getElementById('node-modal').hidden=true; }
+function showNodeOnMap(id){
+  closeNodeInfo();
+  mapFilter='all';
+  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+  const mt=document.querySelector('.tab[data-tab="map"]'); if(mt) mt.classList.add('active');
+  document.getElementById('tab-charts').hidden=true;
+  document.getElementById('tab-messages').hidden=true;
+  document.getElementById('tab-map').hidden=false;
+  document.querySelectorAll('#map-filter .btn').forEach(x=>x.classList.remove('active'));
+  const ab=document.querySelector('#map-filter .btn[data-f="all"]'); if(ab) ab.classList.add('active');
+  if(!mapTimer) mapTimer=setInterval(()=>{ if(!document.getElementById('tab-map').hidden){ loadMap(false); refreshSelectedTrack(); } }, 30000);
+  loadMap(true).then(()=>{ if(mapNodes[id]) selectNode(id); });
+}
+
+let map=null, mapMarkers={}, mapTracks={}, mapNodes={}, selNode=null, mapTimer=null, mapFilter='tracked';
+const AGE_STOPS=[
+  {s:3600,label:'1 ora'},{s:3*3600,label:'3 ore'},{s:6*3600,label:'6 ore'},{s:12*3600,label:'12 ore'},
+  {s:86400,label:'1 giorno'},{s:2*86400,label:'2 giorni'},{s:3*86400,label:'3 giorni'},
+  {s:7*86400,label:'7 giorni'},{s:14*86400,label:'14 giorni'},{s:30*86400,label:'30 giorni'}];
+let mapMaxAgeSec = 30*86400;
+function ensureMap(){
+  if(map) return;
+  map = L.map('map',{zoomControl:true}).setView([45.5,11.4],8);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    {maxZoom:19, attribution:'© OpenStreetMap'}).addTo(map);
+}
+async function loadMap(rebuildList=true){
+  ensureMap();
+  let query='/api/nodes?limit=400';
+  if(mapFilter==='pos') query+='&pos=1';
+  else if(mapFilter==='tracked') query+='&tracked=1';
+  let nodes; try{ nodes = await (await apiFetch(query)).json(); }catch(e){ return; }
+  mapNodes={};
+  let list=null, flt='';
+  if(rebuildList){
+    list=document.getElementById('node-list'); list.innerHTML='';
+    flt=(document.getElementById('node-search').value||'').toLowerCase();
+  }
+  const wantIds=new Set();
+  const now=Date.now()/1000;
+  nodes.forEach(n=>{
+    mapNodes[n.node_id]=n;
+    const hasPos = (n.lat!=null && n.lon!=null);
+    const fresh = (n.last_heard!=null) && ((now - n.last_heard) <= mapMaxAgeSec);
+    if(hasPos && fresh){
+      wantIds.add(n.node_id);
+      const color = n.tracked ? css('--pres') : css('--muted');
+      let mk=mapMarkers[n.node_id];
+      if(!mk){
+        mk=L.circleMarker([n.lat,n.lon],{radius:n.tracked?7:5,color:color,fillColor:color,fillOpacity:.85,weight:2});
+        mk.addTo(map); mk.on('click',()=>selectNode(n.node_id));
+        mapMarkers[n.node_id]=mk;
+      } else {
+        mk.setLatLng([n.lat,n.lon]); mk.setStyle({color:color,fillColor:color,radius:n.tracked?7:5});
+      }
+      mk.bindPopup('<b>'+escapeHtml(n.long_name||n.node_id)+'</b><br>'+escapeHtml(n.hw||'')+
+                   '<br>'+n.lat.toFixed(5)+', '+n.lon.toFixed(5)+'<br>visto '+ago(n.last_heard)+' fa');
+    }
+    if(!rebuildList) return;
+    const nm=(n.long_name||n.node_id||'').toLowerCase();
+    if(flt && nm.indexOf(flt)<0) return;
+    const row=document.createElement('div'); row.className='noderow'+(selNode===n.node_id?' sel':'');
+    const meta=(n.hops!=null?('h'+n.hops+' · '):'')+ago(n.last_heard)+(hasPos?'':' · no pos');
+    row.innerHTML='<input type="checkbox" class="trk" '+(n.tracked?'checked':'')+'>'+
+      '<span class="nname"></span><span class="nmeta">'+meta+'</span>';
+    row.querySelector('.nname').textContent=n.long_name||n.node_id;
+    if(hasPos) row.querySelector('.nname').addEventListener('click',()=>selectNode(n.node_id));
+    else row.querySelector('.nname').style.cursor='default';
+    row.querySelector('.trk').addEventListener('change',e=>toggleTrack(n.node_id,e.target.checked));
+    list.appendChild(row);
+  });
+  // rimuovi i marker che non sono piu' nel filtro corrente
+  for(const id in mapMarkers){ if(!wantIds.has(id)){ map.removeLayer(mapMarkers[id]); delete mapMarkers[id]; } }
+  if(rebuildList && !list.children.length) list.innerHTML='<div class="empty">Nessun nodo.</div>';
+  await drawTracks();
+  setTimeout(()=>{ if(map) map.invalidateSize(); },120);
+}
+function renderTrackLog(pos, n){
+  document.getElementById('track-log-card').hidden=false;
+  document.getElementById('track-log-title').textContent='Percorso · '+((n&&n.long_name)||selNode)+' — '+pos.length+' punti (30gg)';
+  const logEl=document.getElementById('track-log'); logEl.innerHTML='';
+  if(!pos.length){ logEl.innerHTML='<div class="empty">Nessuna posizione registrata. Attiva "traccia" e attendi che il nodo trasmetta la sua posizione.</div>'; return; }
+  pos.slice().reverse().forEach(p=>{
+    const d=document.createElement('div'); d.className='msg';
+    const url='https://www.openstreetmap.org/?mlat='+p.lat+'&mlon='+p.lon+'#map=15/'+p.lat+'/'+p.lon;
+    d.innerHTML='<span class="when">'+fmtDateTime(p.ts*1000)+'</span><span class="who">'+p.lat.toFixed(5)+', '+p.lon.toFixed(5)+'</span>'+
+      '<span class="txt"><a href="'+url+'" target="_blank" rel="noopener">apri ↗</a></span>';
+    logEl.appendChild(d);
+  });
+}
+async function refreshSelectedTrack(){
+  if(!selNode) return;
+  let pos; try{ pos = await (await apiFetch('/api/positions?node_id='+encodeURIComponent(selNode)+'&days=30')).json(); }catch(e){ return; }
+  const cutoff=Date.now()/1000 - mapMaxAgeSec; pos=pos.filter(p=>p.ts>=cutoff);
+  const latlngs=pos.map(p=>[p.lat,p.lon]);
+  if(mapTracks['_sel']){ map.removeLayer(mapTracks['_sel']); delete mapTracks['_sel']; }
+  if(latlngs.length>=2) mapTracks['_sel']=L.polyline(latlngs,{color:css('--temp'),weight:4,opacity:.95}).addTo(map);
+  renderTrackLog(pos, mapNodes[selNode]);
+}
+async function drawTracks(){
+  let pos; try{ pos = await (await apiFetch('/api/positions')).json(); }catch(e){ return; }
+  const cutoff=Date.now()/1000 - mapMaxAgeSec;
+  const byNode={}; pos.forEach(p=>{ if(p.ts>=cutoff){ (byNode[p.node_id]=byNode[p.node_id]||[]).push([p.lat,p.lon]); } });
+  for(const id in mapTracks){ if(id!=='_sel'){ map.removeLayer(mapTracks[id]); delete mapTracks[id]; } }
+  for(const id in byNode){
+    if(byNode[id].length>=2)
+      mapTracks[id]=L.polyline(byNode[id],{color:css('--pres'),weight:3,opacity:.65}).addTo(map);
+  }
+}
+async function toggleTrack(id,checked){
+  try{
+    const k=localStorage.getItem('apikey')||'';
+    const r=await fetch('/api/track'+(k?('?key='+encodeURIComponent(k)):''),{
+      method:'POST',headers:{'Content-Type':'application/json','ngrok-skip-browser-warning':'true'},
+      body:JSON.stringify({node_id:id,tracked:checked})});
+    if(r.status===401){ promptKey(); return; }
+    setTimeout(loadMap,600);
+  }catch(e){}
+}
+async function selectNode(id){
+  selNode=id; const n=mapNodes[id]; if(!n){ return; }
+  document.querySelectorAll('.noderow').forEach(r=>r.classList.remove('sel'));
+  let pos; try{ pos = await (await apiFetch('/api/positions?node_id='+encodeURIComponent(id)+'&days=30')).json(); }catch(e){ pos=[]; }
+  const cutoff=Date.now()/1000 - mapMaxAgeSec; pos=pos.filter(p=>p.ts>=cutoff);
+  const latlngs=pos.map(p=>[p.lat,p.lon]);
+  if(mapTracks['_sel']){ map.removeLayer(mapTracks['_sel']); delete mapTracks['_sel']; }
+  if(latlngs.length>=2){
+    mapTracks['_sel']=L.polyline(latlngs,{color:css('--temp'),weight:4,opacity:.95}).addTo(map);
+    map.fitBounds(mapTracks['_sel'].getBounds(),{padding:[30,30]});
+  } else if(n.lat!=null){ map.setView([n.lat,n.lon],13); }
+  if(mapMarkers[id]) mapMarkers[id].openPopup();
+  renderTrackLog(pos, n);
+}
+// ---------------- Tab Rete (funzioni MeshCore) ----------------
+let netTimer=null, netFilter='all';
+const TYPE_LABEL={Chat:'Client', Repeater:'Ripetitore', Room:'Room', Sensor:'Sensore'};
+async function mcPost(path, body){
+  const k=localStorage.getItem('apikey')||'';
+  const r=await fetch(path+(k?('?key='+encodeURIComponent(k)):''),{
+    method:'POST', headers:{'Content-Type':'application/json','ngrok-skip-browser-warning':'true'},
+    body:JSON.stringify(body||{})});
+  if(r.status===401){ promptKey(); throw new Error('401'); }
+  return r.json();
+}
+function loadNet(){ loadNetNodes(); loadMcConfig(); loadCmdLog(); }
+async function doAdvert(){
+  const st=document.getElementById('net-status');
+  const flood=document.getElementById('advert-flood').checked;
+  st.textContent='Advertise in coda…';
+  try{ await mcPost('/api/mc/advert',{flood}); st.textContent='✓ Advertise accodato (verrà inviato entro un minuto).'; setTimeout(loadCmdLog,2000); }
+  catch(e){ st.textContent='Errore invio advertise.'; }
+}
+async function loadMcConfig(){
+  try{ const c=await (await apiFetch('/api/mc/config')).json();
+    document.getElementById('autoadv-min').value = c.auto_advert_min ?? 0; }catch(e){}
+}
+async function saveMcConfig(){
+  const st=document.getElementById('net-status');
+  const v=parseInt(document.getElementById('autoadv-min').value)||0;
+  try{ const c=await mcPost('/api/mc/config',{auto_advert_min:v});
+    st.textContent = c.auto_advert_min>0 ? ('✓ Advertise automatico ogni '+c.auto_advert_min+' min.') : '✓ Advertise automatico disattivato.'; }
+  catch(e){ st.textContent='Errore salvataggio.'; }
+}
+async function loadCmdLog(){
+  let rows; try{ rows=await (await apiFetch('/api/mc/commands?limit=12')).json(); }catch(e){ return; }
+  const el=document.getElementById('cmd-log'); if(!el) return; el.innerHTML='';
+  if(!rows.length){ el.innerHTML='<div class="empty">Nessuna azione ancora.</div>'; return; }
+  rows.forEach(c=>{
+    let r=''; try{ r=c.result?JSON.parse(c.result):null; }catch(e){}
+    let desc=c.status;
+    if(c.action==='ping'&&r) desc = (r.reachable?'✓ ':'✗ ') + (r.info||'') + (r.reachable?(' ('+r.seconds+'s)'):'');
+    else if(c.action==='advert'&&c.status==='done') desc='inviato';
+    else if(c.error) desc='errore: '+c.error;
+    const d=document.createElement('div'); d.className='rank';
+    d.innerHTML='<span class="rn"></span><span class="rv"></span>';
+    d.querySelector('.rn').textContent=(c.action==='advert'?'📢 Advertise':'📡 Ping')+' · '+fmtDateTime(c.ts*1000);
+    d.querySelector('.rv').textContent=desc;
+    el.appendChild(d);
+  });
+}
+async function loadNetNodes(){
+  let rows; try{ rows=await (await apiFetch('/api/nodes?limit=500')).json(); }catch(e){ return; }
+  const flt=(document.getElementById('net-search').value||'').toLowerCase();
+  const tb=document.querySelector('#net-table tbody'); tb.innerHTML='';
+  let n=0;
+  rows.forEach(nd=>{
+    const role=nd.role||'';
+    if(netFilter!=='all' && role!==netFilter) return;
+    const nm=(nd.long_name||nd.node_id||'').toLowerCase();
+    if(flt && nm.indexOf(flt)<0) return;
+    if(n++>=300) return;
+    const label=TYPE_LABEL[role]||role||'?';
+    const bcls = ('b-'+role) in {'b-Chat':1,'b-Repeater':1,'b-Room':1,'b-Sensor':1} ? 'b-'+role : 'b-other';
+    const tr=document.createElement('tr');
+    tr.innerHTML='<td></td><td><span class="badge '+bcls+'">'+label+'</span></td>'+
+                 '<td>'+(nd.last_heard?ago(nd.last_heard):'?')+'</td>'+
+                 '<td>'+(nd.hops!=null?nd.hops:'')+'</td>'+
+                 '<td><button class="btn pingbtn">Ping</button><span class="pingres"></span></td>';
+    const nameTd=tr.querySelector('td'); nameTd.textContent=nd.long_name||nd.node_id;
+    nameTd.style.cursor='pointer'; nameTd.title='Info nodo';
+    nameTd.addEventListener('click',()=>openNodeInfo(nd.node_id));
+    const btn=tr.querySelector('.pingbtn');
+    btn.addEventListener('click',()=>doPing(nd.node_id, role, btn, tr.querySelector('.pingres')));
+    tb.appendChild(tr);
+  });
+  if(!tb.children.length) tb.innerHTML='<tr><td colspan="5" style="text-align:center;color:var(--muted)">Nessun nodo</td></tr>';
+}
+async function doPing(node_id, role, btn, resEl){
+  if(role==='Chat'){
+    if(!confirm('Attenzione: per i nodi companion NON è un vero ping.\n\nVerrà inviato un messaggio di testo "ping" al nodo, e si controlla l\'ACK di consegna (comparirà quindi un messaggio sul nodo destinatario).\n\nProcedere?')) return;
+  }
+  btn.disabled=true; resEl.textContent='ping…';
+  let id;
+  try{ const r=await mcPost('/api/mc/ping',{node_id}); id=r.id; }
+  catch(e){ resEl.textContent='errore'; btn.disabled=false; return; }
+  // poll fino a ~35s
+  const t0=Date.now();
+  const poll=async()=>{
+    if(Date.now()-t0>35000){ resEl.textContent='timeout'; btn.disabled=false; return; }
+    let rows; try{ rows=await (await apiFetch('/api/mc/commands?limit=25')).json(); }catch(e){ setTimeout(poll,2500); return; }
+    const c=rows.find(x=>x.id===id);
+    if(c && c.status!=='pending'){
+      let r=null; try{ r=c.result?JSON.parse(c.result):null; }catch(e){}
+      if(c.status==='error') resEl.textContent='✗ '+(c.error||'errore');
+      else if(r) resEl.textContent = (r.reachable?'✓ ':'✗ ') + (r.info||'') + (r.reachable?(' ('+r.seconds+'s)'):'');
+      else resEl.textContent='fatto';
+      btn.disabled=false; loadCmdLog();
+    } else setTimeout(poll,2500);
+  };
+  setTimeout(poll,2500);
+}
+let msgTimer=null;
+function initTabs(){
+  document.getElementById('tabs').addEventListener('click', e=>{
+    const b=e.target.closest('.tab'); if(!b) return;
+    document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+    b.classList.add('active');
+    const tab=b.dataset.tab;
+    document.getElementById('tab-charts').hidden   = (tab!=='charts');
+    document.getElementById('tab-messages').hidden = (tab!=='messages');
+    document.getElementById('tab-map').hidden      = (tab!=='map');
+    document.getElementById('tab-net').hidden      = (tab!=='net');
+    if(tab==='net'){ loadNet(); if(!netTimer) netTimer=setInterval(()=>{ if(!document.getElementById('tab-net').hidden){ loadCmdLog(); } }, 5000); }
+    if(tab==='messages'){
+      loadChannels().then(()=>loadMessages(true)); loadMeshStats();
+      if(!msgTimer) msgTimer=setInterval(()=>{ loadMessages(); loadMeshStats(); }, 30000);
+    }
+    if(tab==='map'){
+      loadMap();
+      if(!mapTimer) mapTimer=setInterval(()=>{
+        if(!document.getElementById('tab-map').hidden){ loadMap(false); refreshSelectedTrack(); }
+      }, 30000);
+    }
+  });
+  document.getElementById('send-btn').addEventListener('click', sendMessage);
+  document.getElementById('send-text').addEventListener('keydown', e=>{ if(e.key==='Enter') sendMessage(); });
+  let searchTimer=null;
+  document.getElementById('node-search').addEventListener('input', ()=>{
+    clearTimeout(searchTimer); searchTimer=setTimeout(loadMap, 250);
+  });
+  document.getElementById('map-filter').addEventListener('click', e=>{
+    const b=e.target.closest('button'); if(!b) return;
+    document.querySelectorAll('#map-filter .btn').forEach(x=>x.classList.remove('active'));
+    b.classList.add('active'); mapFilter=b.dataset.f; loadMap(true);
+  });
+  let ageTimer=null;
+  document.getElementById('age-slider').addEventListener('input', e=>{
+    const st=AGE_STOPS[parseInt(e.target.value)]||AGE_STOPS[AGE_STOPS.length-1];
+    mapMaxAgeSec=st.s; document.getElementById('age-label').textContent=st.label;
+    clearTimeout(ageTimer); ageTimer=setTimeout(()=>{ loadMap(false); refreshSelectedTrack(); }, 150);
+  });
+  document.getElementById('nm-x').addEventListener('click', closeNodeInfo);
+  document.getElementById('node-modal').addEventListener('click', e=>{ if(e.target.id==='node-modal') closeNodeInfo(); });
+  document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeNodeInfo(); });
+  document.getElementById('advert-btn').addEventListener('click', doAdvert);
+  document.getElementById('autoadv-save').addEventListener('click', saveMcConfig);
+  document.getElementById('net-filter').addEventListener('click', e=>{
+    const b=e.target.closest('button'); if(!b) return;
+    document.querySelectorAll('#net-filter .btn').forEach(x=>x.classList.remove('active'));
+    b.classList.add('active'); netFilter=b.dataset.t; loadNetNodes();
+  });
+  let netSearchTimer=null;
+  document.getElementById('net-search').addEventListener('input', ()=>{
+    clearTimeout(netSearchTimer); netSearchTimer=setTimeout(loadNetNodes, 250);
+  });
+}
+async function loadLatest(){
+  const d = await (await apiFetch('/api/latest')).json();
+  if(d.latest){
+    document.getElementById('v-temp').innerHTML = nf(d.latest.temperature,1)+'<span class="unit">°C</span>';
+    document.getElementById('v-hum').innerHTML  = nf(d.latest.humidity,1)+'<span class="unit">%</span>';
+    document.getElementById('v-pres').innerHTML = nf(d.latest.pressure,1)+'<span class="unit">hPa</span>';
+    document.getElementById('v-dew').innerHTML  = nf(d.latest.dew,1)+'<span class="unit">°C</span>';
+    const dt = new Date(d.latest.ts*1000);
+    document.getElementById('foot').textContent =
+      d.count+' letture · ultima: '+dt.toLocaleString('it-IT');
+  }
+}
+document.getElementById('ranges').addEventListener('click', e=>{
+  const b=e.target.closest('button'); if(!b) return;
+  document.querySelectorAll('#ranges .btn').forEach(x=>x.classList.remove('active'));
+  b.classList.add('active'); curHours=parseFloat(b.dataset.h);
+  for(const k in charts) charts[k].resetZoom();
+  load();
+});
+document.getElementById('zreset').addEventListener('click', ()=>{
+  for(const k in charts) charts[k].resetZoom();
+});
+document.getElementById('setkey').addEventListener('click', promptKey);
+const themeBtn=document.getElementById('theme');
+function applyTheme(t){ if(t) document.documentElement.setAttribute('data-theme',t); }
+applyTheme(localStorage.getItem('theme'));
+themeBtn.addEventListener('click',()=>{
+  const cur=document.documentElement.getAttribute('data-theme');
+  const next = cur==='dark'?'light':(cur==='light'?'':'dark');
+  if(next){document.documentElement.setAttribute('data-theme',next);localStorage.setItem('theme',next);}
+  else{document.documentElement.removeAttribute('data-theme');localStorage.removeItem('theme');}
+  for(const k in charts){const c=charts[k];
+    c.options.scales.x.grid.color=css('--grid');c.options.scales.y.grid.color=css('--grid');
+    c.options.scales.x.ticks.color=css('--muted');c.options.scales.y.ticks.color=css('--muted');
+    c.options.plugins.legend.labels.color=css('--ink2');
+    c.data.datasets.forEach(ds=>{ ds.borderColor=css(ds._colorVar)+(ds._alpha||'');
+      ds.backgroundColor= ds._fill ? css(ds._colorVar)+'22' : 'transparent'; });
+    c.update();}
+});
+
+initTabs();
+load(); loadLatest(); loadAllStats(); loadRecords();
+setInterval(function(){
+  load(); loadLatest(); loadAllStats(); loadRecords();
+  if(!document.getElementById('tab-messages').hidden){ loadMessages(); loadMeshStats(); }
+}, 60000);
+</script>
+</body>
+</html>

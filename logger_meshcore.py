@@ -1,0 +1,487 @@
+#!/usr/bin/env python3
+"""Logger MeshCore — legge la telemetria ambientale (LPP Cayenne) e la salva
+nella STESSA tabella `readings` usata dalla dashboard (così grafici/API restano
+identici). Basato sull'API reale della libreria `meshcore` (asyncio).
+
+BOZZA da validare alla prima connessione reale: la forma esatta del payload
+`TELEMETRY_RESPONSE` e il flusso connect vanno confermati col nodo collegato.
+
+Connessione (env MC_CONN): serial | tcp | ble
+  serial: MC_PORT=/dev/ttyACM0  MC_BAUD=115200
+  tcp:    MC_HOST=<ip>  MC_TCP_PORT=5000
+  ble:    MC_BLE_ADDR=<mac>  MC_BLE_PIN=<pin opz>
+Sensore (env MC_SENSOR): 'self' = nodo collegato al Pi;
+  altrimenti nome (o prefisso pubkey) di un contatto remoto sulla mesh.
+"""
+import os, time, json, sqlite3, asyncio, inspect, datetime
+from meshcore import MeshCore, EventType
+
+DB       = os.environ.get("MESH_DB", os.path.join(os.path.dirname(os.path.abspath(__file__)), "meshlogger.db"))
+CONN     = os.environ.get("MC_CONN", "serial").lower()
+PORT     = os.environ.get("MC_PORT", "/dev/ttyACM0")
+BAUD     = int(os.environ.get("MC_BAUD", "115200"))
+HOST     = os.environ.get("MC_HOST", "")
+TCP_PORT = int(os.environ.get("MC_TCP_PORT", "5000"))
+BLE_ADDR = os.environ.get("MC_BLE_ADDR", "") or None
+BLE_PIN  = os.environ.get("MC_BLE_PIN", "") or None
+SENSOR   = os.environ.get("MC_SENSOR", "self")
+INTERVAL = int(os.environ.get("MESH_INTERVAL", "60"))
+NUM_CHANNELS = int(os.environ.get("MC_NUM_CHANNELS", "8"))
+NODES_REFRESH = int(os.environ.get("MC_NODES_REFRESH", "300"))
+
+def log(*a):
+    print(datetime.datetime.now().isoformat(timespec="seconds"), *a, flush=True)
+
+async def _maybe(x):
+    """Attende x se è una coroutine, altrimenti lo ritorna (API sync/async-agnostica)."""
+    return await x if inspect.iscoroutine(x) else x
+
+def init_db():
+    con = sqlite3.connect(DB)
+    try:
+        con.execute("PRAGMA journal_mode=WAL")
+        con.execute("PRAGMA busy_timeout=8000")
+    except Exception:
+        pass
+    con.execute("""CREATE TABLE IF NOT EXISTS readings(
+        ts INTEGER PRIMARY KEY, iso TEXT,
+        temperature REAL, humidity REAL, pressure REAL, metrics TEXT)""")
+    con.execute("""CREATE TABLE IF NOT EXISTS channels(
+        idx INTEGER PRIMARY KEY, name TEXT, role INTEGER)""")
+    con.execute("""CREATE TABLE IF NOT EXISTS messages(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts INTEGER, iso TEXT, from_id TEXT, from_name TEXT,
+        to_id TEXT, channel INTEGER, msg_id INTEGER, text TEXT,
+        outgoing INTEGER DEFAULT 0, reply_id INTEGER,
+        UNIQUE(from_id, msg_id, text))""")
+    for ddl in ("ALTER TABLE messages ADD COLUMN path TEXT",
+                "ALTER TABLE messages ADD COLUMN path_len INTEGER",
+                "ALTER TABLE messages ADD COLUMN snr REAL"):
+        try:
+            con.execute(ddl)
+        except sqlite3.OperationalError:
+            pass
+    con.execute("CREATE INDEX IF NOT EXISTS idx_msg_ts ON messages(ts)")
+    con.execute("""CREATE TABLE IF NOT EXISTS outbox(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER,
+        channel INTEGER, text TEXT, status TEXT DEFAULT 'pending', error TEXT, reply_id INTEGER)""")
+    con.execute("""CREATE TABLE IF NOT EXISTS nodes(
+        node_id TEXT PRIMARY KEY, num INTEGER, long_name TEXT, short_name TEXT,
+        hw TEXT, role TEXT, last_heard INTEGER, snr REAL, hops INTEGER,
+        battery INTEGER, voltage REAL, has_env INTEGER, lat REAL, lon REAL, updated INTEGER,
+        tracked INTEGER DEFAULT 0)""")
+    con.execute("""CREATE TABLE IF NOT EXISTS positions(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, node_id TEXT, ts INTEGER, lat REAL, lon REAL, alt REAL)""")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_pos ON positions(node_id, ts)")
+    con.execute("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)")
+    con.execute("""CREATE TABLE IF NOT EXISTS mc_commands(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, action TEXT, params TEXT,
+        status TEXT DEFAULT 'pending', result TEXT, error TEXT, done_ts INTEGER)""")
+    # pulizia una-tantum dei nodi/posizioni dell'era Meshtastic (id tipo '!hex')
+    con.execute("DELETE FROM nodes WHERE node_id LIKE '!%'")
+    con.execute("DELETE FROM positions WHERE node_id LIKE '!%'")
+    con.commit()
+    return con
+
+def _lpp_items(payload):
+    try:
+        from meshcore.lpp_json_encoder import lpp_json_encoder, LppFrame
+        if isinstance(payload, LppFrame):
+            return json.loads(json.dumps(payload, default=lpp_json_encoder))
+        if isinstance(payload, (list, tuple)):
+            return json.loads(json.dumps(list(payload), default=lpp_json_encoder))
+        if isinstance(payload, dict):
+            return payload.get("lpp") or payload.get("telemetry") or []
+        return json.loads(json.dumps(payload, default=lpp_json_encoder))
+    except Exception as e:
+        log("lpp parse warn:", e, "| payload:", repr(payload)[:200])
+        return []
+
+def parse_lpp(payload):
+    """Estrae {temperature,humidity,pressure} dal canale AMBIENTALE (il BME:
+    quello che contiene umidità o barometro). Ignora la temperatura di scheda
+    (canale con la sola tensione)."""
+    items = _lpp_items(payload)
+    if isinstance(items, dict):
+        items = [items]
+    bychan = {}
+    for it in (items or []):
+        if not isinstance(it, dict):
+            continue
+        ch = it.get("channel")
+        typ = str(it.get("type", "")).lower()
+        val = it.get("value")
+        if isinstance(val, dict):
+            val = val.get("value", val)
+        d = bychan.setdefault(ch, {})
+        if "temp" in typ:
+            d["temperature"] = val
+        elif "humid" in typ:
+            d["humidity"] = val
+        elif "barom" in typ or "press" in typ:
+            d["pressure"] = val
+        elif "volt" in typ:
+            d["voltage"] = val
+        elif "alt" in typ:
+            d["altitude"] = val
+    # canale ambientale = quello che ha umidità o pressione (il BME)
+    for ch, d in bychan.items():
+        if "humidity" in d or "pressure" in d:
+            return {k: d[k] for k in ("temperature", "humidity", "pressure") if k in d}
+    return {}  # nessun dato ambientale in questa risposta
+
+def save(con, m):
+    now = int(time.time()); iso = datetime.datetime.now().isoformat(timespec="seconds")
+    con.execute("INSERT OR REPLACE INTO readings(ts,iso,temperature,humidity,pressure,metrics) VALUES(?,?,?,?,?,?)",
+                (now, iso, m.get("temperature"), m.get("humidity"), m.get("pressure"), json.dumps(m)))
+    con.commit()
+
+def _iso(ts):
+    return datetime.datetime.fromtimestamp(ts).isoformat(timespec="seconds")
+
+def _split_name(text):
+    """I messaggi di canale MeshCore sono 'Nome: testo'. Separa nome e testo."""
+    if isinstance(text, str):
+        i = text.find(": ")
+        if 0 < i <= 32 and "\n" not in text[:i]:
+            return text[:i], text[i + 2:]
+    return None, text
+
+_recent_logs = []  # RX log recenti dei messaggi di canale (GRP_TXT) per correlare il percorso
+
+def on_rx_log(ev):
+    try:
+        pl = getattr(ev, "payload", None) or {}
+        if not isinstance(pl, dict) or pl.get("payload_typename") != "GRP_TXT":
+            return
+        _recent_logs.append({"t": time.time(), "path": pl.get("path"),
+                             "snr": pl.get("snr"), "path_len": pl.get("path_len"), "used": False})
+        cutoff = time.time() - 30
+        while _recent_logs and _recent_logs[0]["t"] < cutoff:
+            _recent_logs.pop(0)
+    except Exception:
+        pass
+
+def _match_recent_log():
+    now = time.time()
+    for r in reversed(_recent_logs):
+        if r["used"]:
+            continue
+        if now - r["t"] > 12:
+            break
+        r["used"] = True
+        return r
+    return None
+
+def on_chan_msg(ev):
+    """Callback per i messaggi di canale ricevuti → tabella messages."""
+    try:
+        pl = getattr(ev, "payload", None) or {}
+        if not isinstance(pl, dict):
+            return
+        ch = pl.get("channel_idx")
+        text = pl.get("text", "") or ""
+        ts = int(pl.get("sender_timestamp") or time.time())
+        name, msg = _split_name(text)
+        path = pl.get("path"); path_len = pl.get("path_len"); snr = pl.get("SNR")
+        if not path:  # fallback: correla con l'RX log GRP_TXT più recente
+            lr = _match_recent_log()
+            if lr:
+                path = lr.get("path")
+                if snr is None: snr = lr.get("snr")
+                if not path_len: path_len = lr.get("path_len")
+        con = sqlite3.connect(DB)
+        try: con.execute("PRAGMA busy_timeout=8000")
+        except Exception: pass
+        con.execute("""INSERT OR IGNORE INTO messages(ts,iso,from_id,from_name,to_id,channel,msg_id,text,outgoing,path,path_len,snr)
+                       VALUES(?,?,?,?,?,?,?,?,0,?,?,?)""",
+                    (ts, _iso(ts), None, name, None, ch, ts, msg, path, path_len, snr))
+        con.commit(); con.close()
+        log(f"MSG ch{ch} {name or '?'}: {msg} [salti={path_len} percorso={'sì' if path else 'no'} snr={snr}]")
+    except Exception as e:
+        log("on_chan_msg err:", e)
+
+async def process_outbox(mc, con, myname):
+    """Invia i messaggi in coda sul canale indicato (send_chan_msg) e li registra."""
+    try:
+        pend = con.execute("SELECT id,channel,text FROM outbox WHERE status='pending' ORDER BY id").fetchall()
+    except Exception:
+        return
+    for oid, ch, text in pend:
+        try:
+            await _maybe(mc.commands.send_chan_msg(int(ch or 0), text))
+            ts = int(time.time())
+            con.execute("UPDATE outbox SET status='sent' WHERE id=?", (oid,))
+            con.execute("""INSERT INTO messages(ts,iso,from_id,from_name,to_id,channel,msg_id,text,outgoing)
+                           VALUES(?,?,?,?,?,?,?,?,1)""",
+                        (ts, _iso(ts), None, myname, None, int(ch or 0), None, text))
+            con.commit()
+            log(f"SENT ch{ch}: {text}")
+        except Exception as e:
+            con.execute("UPDATE outbox SET status='error', error=? WHERE id=?", (str(e), oid)); con.commit()
+            log("send err:", e)
+
+TYPE_NAMES = {1: "Chat", 2: "Repeater", 3: "Room", 4: "Sensor", 5: "Sensor"}
+
+async def dump_nodes_mc(mc, con):
+    """Scarica i contatti MeshCore nella tabella `nodes` (upsert, preserva `tracked`)
+    e registra le posizioni dei nodi tracciati quando cambiano."""
+    try:
+        try:
+            await _maybe(mc.commands.get_contacts())
+        except Exception:
+            await _maybe(mc.ensure_contacts())
+        cs = getattr(mc, "contacts", None) or {}
+        items = cs.items() if isinstance(cs, dict) else enumerate(cs)
+        now = int(time.time()); rows = []
+        for k, v in items:
+            if not isinstance(v, dict):
+                continue
+            pk = v.get("public_key") or ""
+            nid = pk[:12] if pk else str(k)[:12]
+            lat = v.get("adv_lat"); lon = v.get("adv_lon")
+            if (lat in (0, 0.0)) and (lon in (0, 0.0)):
+                lat = lon = None
+            opl = v.get("out_path_len")
+            hops = opl if isinstance(opl, int) and opl >= 0 else None
+            t = v.get("type")
+            role = TYPE_NAMES.get(t, ("tipo " + str(t)) if t is not None else None)
+            rows.append((nid, None, v.get("adv_name"), None, None, role,
+                         v.get("last_advert"), None, hops, None, None, 0, lat, lon, now))
+        con.executemany("""INSERT INTO nodes
+            (node_id,num,long_name,short_name,hw,role,last_heard,snr,hops,battery,voltage,has_env,lat,lon,updated)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(node_id) DO UPDATE SET
+              long_name=excluded.long_name, role=excluded.role, last_heard=excluded.last_heard,
+              hops=excluded.hops, lat=excluded.lat, lon=excluded.lon, updated=excluded.updated""", rows)
+        tracked = {r[0] for r in con.execute("SELECT node_id FROM nodes WHERE tracked=1")}
+        for row in rows:
+            nid, lat, lon = row[0], row[12], row[13]
+            if nid in tracked and lat is not None and lon is not None:
+                last = con.execute("SELECT lat,lon FROM positions WHERE node_id=? ORDER BY ts DESC LIMIT 1", (nid,)).fetchone()
+                if (not last) or round(last[0], 6) != round(lat, 6) or round(last[1], 6) != round(lon, 6):
+                    con.execute("INSERT INTO positions(node_id,ts,lat,lon,alt) VALUES(?,?,?,?,NULL)", (nid, row[6] or now, lat, lon))
+        con.execute("DELETE FROM positions WHERE ts < ?", (now - 31 * 86400,))
+        con.commit()
+        withpos = sum(1 for r in rows if r[12] is not None)
+        log(f"nodi MeshCore aggiornati: {len(rows)} ({withpos} con posizione)")
+    except Exception as e:
+        log("dump_nodes err:", e)
+
+async def process_mc_commands(mc, con):
+    """Esegue i comandi MeshCore accodati dal web (advert, ping) e riscrive il risultato.
+    Estensibile: nuove azioni = nuovi rami qui + endpoint web."""
+    try:
+        pend = con.execute("SELECT id,action,params FROM mc_commands WHERE status='pending' ORDER BY id LIMIT 3").fetchall()
+    except Exception:
+        return
+    for cid, action, params_json in pend:
+        try:
+            params = json.loads(params_json) if params_json else {}
+        except Exception:
+            params = {}
+        try:
+            if action == "advert":
+                flood = bool(params.get("flood"))
+                await _maybe(mc.commands.send_advert(flood=flood))
+                res = {"ok": True, "flood": flood}
+            elif action == "ping":
+                nid = params.get("node_id")
+                contact = None
+                try:
+                    contact = mc.get_contact_by_key_prefix(nid)
+                except Exception:
+                    contact = None
+                if not contact:
+                    raise RuntimeError("contatto non trovato")
+                ctype = contact.get("type")
+                if ctype == 1:
+                    # companion: NON è un vero ping → invia msg 'ping' e attende l'ACK di consegna
+                    got = {"ok": False, "trip": None}
+                    target = {"code": None}
+                    def on_ack(ev):
+                        pl = getattr(ev, "payload", None) or {}
+                        code = pl.get("code") if isinstance(pl, dict) else None
+                        if target["code"] is None or code == target["code"]:
+                            got["ok"] = True
+                            got["trip"] = pl.get("trip_time") if isinstance(pl, dict) else None
+                    sub = mc.subscribe(EventType.ACK, on_ack)
+                    t0 = time.time()
+                    try:
+                        ev = await _maybe(mc.commands.send_msg(contact, "ping"))
+                        pl = getattr(ev, "payload", None) or {}
+                        ea = pl.get("expected_ack") if isinstance(pl, dict) else None
+                        target["code"] = ea.hex() if isinstance(ea, (bytes, bytearray)) else (str(ea) if ea else None)
+                        while time.time() - t0 < 15 and not got["ok"]:
+                            await asyncio.sleep(0.25)
+                    finally:
+                        try:
+                            mc.unsubscribe(sub)
+                        except Exception:
+                            try: sub.unsubscribe()
+                            except Exception: pass
+                    secs = round(got["trip"] / 1000.0, 2) if got["trip"] else round(time.time() - t0, 1)
+                    res = {"method": "dm", "reachable": got["ok"], "seconds": secs,
+                           "info": ("consegnato (ACK)" if got["ok"] else "nessun ACK")}
+                else:
+                    # ripetitore/room: path discovery (silenzioso)
+                    t0 = time.time()
+                    ev = await _maybe(mc.commands.send_path_discovery_sync(contact, timeout=25))
+                    dt = round(time.time() - t0, 1)
+                    reachable = bool(ev) and (getattr(ev, "type", None) is not None) and (not _is_err(ev))
+                    res = {"method": "path", "reachable": reachable, "seconds": dt,
+                           "info": ("percorso trovato" if reachable else "nessuna risposta")}
+            else:
+                raise RuntimeError("azione sconosciuta: " + str(action))
+            con.execute("UPDATE mc_commands SET status='done', result=?, done_ts=? WHERE id=?",
+                        (json.dumps(res), int(time.time()), cid))
+            con.commit()
+            log(f"CMD #{cid} {action} -> {res}")
+        except Exception as e:
+            con.execute("UPDATE mc_commands SET status='error', error=?, done_ts=? WHERE id=?",
+                        (str(e), int(time.time()), cid))
+            con.commit()
+            log(f"CMD #{cid} {action} ERR: {e}")
+
+def get_auto_advert_min(con):
+    try:
+        row = con.execute("SELECT value FROM meta WHERE key='auto_advert_min'").fetchone()
+        return int(row[0]) if row and row[0] else 0
+    except Exception:
+        return 0
+
+async def dump_channels_mc(mc, con):
+    """Interroga i canali MeshCore e li salva nella tabella `channels` (idx,name,role)
+    compatibile con /api/channels. Un canale è attivo se ha nome o un secret non-nullo."""
+    try:
+        rows = []
+        for idx in range(NUM_CHANNELS):
+            ev = await _maybe(mc.commands.get_channel(idx))
+            if ev is None or _is_err(ev):
+                continue
+            pl = getattr(ev, "payload", ev)
+            if not isinstance(pl, dict):
+                continue
+            name = pl.get("channel_name", "") or ""
+            secret = pl.get("channel_secret", b"") or b""
+            enabled = bool(name) or (isinstance(secret, (bytes, bytearray)) and any(secret))
+            if not enabled:
+                continue
+            role = 1 if idx == 0 else 2
+            rows.append((idx, name or (f"Canale {idx}"), role))
+        con.execute("DELETE FROM channels")
+        con.executemany("INSERT OR REPLACE INTO channels(idx,name,role) VALUES(?,?,?)", rows)
+        con.commit()
+        log(f"canali MeshCore aggiornati: {len(rows)} attivi ({', '.join(r[1] for r in rows)})")
+    except Exception as e:
+        log("dump_channels err:", e)
+
+async def make_mc():
+    if CONN == "serial":
+        mc = await _maybe(MeshCore.create_serial(PORT, baudrate=BAUD, auto_reconnect=True))
+    elif CONN == "tcp":
+        mc = await _maybe(MeshCore.create_tcp(HOST, TCP_PORT, auto_reconnect=True))
+    elif CONN == "ble":
+        mc = await _maybe(MeshCore.create_ble(address=BLE_ADDR, pin=BLE_PIN, auto_reconnect=True))
+    else:
+        raise ValueError("MC_CONN non valido: " + CONN)
+    if not getattr(mc, "is_connected", False):
+        await _maybe(mc.connect())
+    return mc
+
+def _is_err(ev):
+    f = getattr(ev, "is_error", None)
+    try:
+        return f() if callable(f) else bool(f)
+    except Exception:
+        return False
+
+async def _one_request(mc):
+    if SENSOR == "self":
+        return await _maybe(mc.commands.get_self_telemetry())
+    await _maybe(mc.ensure_contacts())
+    contact = mc.get_contact_by_name(SENSOR) or mc.get_contact_by_key_prefix(SENSOR)
+    if not contact:
+        log("contatto sensore non trovato:", SENSOR)
+        return None
+    return await _maybe(mc.commands.req_telemetry(contact))
+
+async def get_telemetry(mc):
+    """Interroga la telemetria; ritenta perché il canale ambientale (BME) a volte
+    manca nella risposta. Ritorna dict con temp/umidità/pressione o {}."""
+    last_payload = None
+    for attempt in range(4):
+        ev = await _one_request(mc)
+        if ev is None or _is_err(ev):
+            await asyncio.sleep(1.5); continue
+        last_payload = getattr(ev, "payload", ev)
+        m = parse_lpp(last_payload)
+        if m.get("humidity") is not None or m.get("pressure") is not None:
+            return m
+        await asyncio.sleep(1.5)
+    log("nessun canale ambientale nella risposta; ultimo payload:", repr(last_payload)[:250])
+    return {}
+
+async def main():
+    con = init_db()
+    log(f"logger MeshCore avviato: conn={CONN} sensor={SENSOR} interval={INTERVAL}s")
+    mc = None
+    myname = "MeshCore"
+    last_nodes = 0
+    last_auto_advert = 0
+    while True:
+        cycle = time.time()
+        try:
+            if mc is None or not getattr(mc, "is_connected", False):
+                log("connessione...")
+                mc = await make_mc()
+                try:
+                    si = getattr(mc, "self_info", None) or {}
+                    myname = si.get("name") or myname
+                except Exception:
+                    pass
+                await dump_channels_mc(mc, con)
+                await dump_nodes_mc(mc, con); last_nodes = time.time()
+                try:
+                    await _maybe(mc.set_decrypt_channel_logs(True))  # attacca path/SNR ai msg di canale
+                except Exception as e:
+                    log("decrypt_channel_logs err:", e)
+                try:
+                    mc.subscribe(EventType.CHANNEL_MSG_RECV, on_chan_msg)
+                    mc.subscribe(EventType.RX_LOG_DATA, on_rx_log)
+                    await _maybe(mc.start_auto_message_fetching())
+                    log("chat canali attiva")
+                except Exception as e:
+                    log("subscribe/fetch err:", e)
+                log(f"connesso (nodo: {myname})")
+            await process_outbox(mc, con, myname)
+            await process_mc_commands(mc, con)
+            # advertise automatico (configurabile da /api/mc/config)
+            aam = get_auto_advert_min(con)
+            if aam > 0 and (time.time() - last_auto_advert) >= aam * 60:
+                try:
+                    await _maybe(mc.commands.send_advert(flood=False))
+                    last_auto_advert = time.time()
+                    log(f"AUTO-ADVERT inviato (ogni {aam} min)")
+                except Exception as e:
+                    log("auto-advert err:", e)
+            if time.time() - last_nodes >= NODES_REFRESH:
+                await dump_nodes_mc(mc, con); last_nodes = time.time()
+            m = await get_telemetry(mc)
+            if m and any(m.get(k) is not None for k in ("temperature", "humidity", "pressure")):
+                save(con, m)
+                log(f"SAVED T={m.get('temperature')} RH={m.get('humidity')} P={m.get('pressure')}")
+            else:
+                log("nessuna telemetria in questo ciclo")
+        except Exception as e:
+            log("errore/riconnessione:", e)
+            try:
+                if mc: await _maybe(mc.disconnect())
+            except Exception:
+                pass
+            mc = None
+            await asyncio.sleep(5)
+        await asyncio.sleep(max(1, INTERVAL - (time.time() - cycle)))
+
+if __name__ == "__main__":
+    asyncio.run(main())

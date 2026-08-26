@@ -1,0 +1,34 @@
+# --- Dati e segreti: NON versionare / NON distribuire ---
+meshlogger.db
+meshlogger.db-wal
+meshlogger.db-shm
+*.db
+*.db-wal
+*.db-shm
+
+# Virtualenv
+venv/
+.venv/
+env/
+
+# Segreti / config locale
+.env
+*.key
+ngrok.yml
+secrets.env
+SECRETS.local.md
+
+# Unit systemd reali (con chiavi) — versiona solo i template in systemd/
+/etc/
+*.service.local
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

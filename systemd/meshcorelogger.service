@@ -1,0 +1,27 @@
+# Template — copiare in /etc/systemd/system/meshcorelogger.service
+# Sostituire i valori tra <...> e i percorsi utente.
+[Unit]
+Description=Meshlogger - daemon MeshCore (telemetria + chat + nodi)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/meshlogger
+# Connessione al nodo MeshCore: tcp | serial | ble
+Environment=MC_CONN=tcp
+Environment=MC_HOST=<IP_DEL_NODO_MESHCORE>
+Environment=MC_TCP_PORT=5000
+Environment=MC_SENSOR=self
+Environment=MESH_INTERVAL=60
+# Per connessione seriale usare invece:
+#   Environment=MC_CONN=serial
+#   Environment=MC_PORT=/dev/ttyACM0
+#   Environment=MC_BAUD=115200
+ExecStart=/home/pi/meshlogger/venv/bin/python /home/pi/meshlogger/logger_meshcore.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

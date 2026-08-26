@@ -1,0 +1,25 @@
+# Template — copiare in /etc/systemd/system/meshweb.service
+# Sostituire i valori tra <...>.
+[Unit]
+Description=Meshlogger - backend Flask + dashboard (waitress)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/meshlogger
+Environment=WEB_PORT=8080
+# Chiave API: genera una stringa casuale, es. `openssl rand -hex 24`
+# Se lasciata vuota, /api e' aperto (usare SOLO in LAN fidata).
+Environment=API_KEY=<GENERA_UNA_CHIAVE_CASUALE>
+# Correzione pressione per l'altitudine locale (hPa)
+Environment=PRESSURE_OFFSET=0
+# Etichetta mostrata per il nodo sensore (facoltativa)
+Environment=MESH_NODE_LABEL=Nodo sensore
+ExecStart=/home/pi/meshlogger/venv/bin/python /home/pi/meshlogger/web.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

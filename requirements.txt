@@ -1,0 +1,7 @@
+# Meshlogger — dipendenze Python (Python 3.11+)
+meshcore
+flask
+waitress
+
+# Opzionale: solo se si vuole tornare al vecchio logger Meshtastic
+# meshtastic
