@@ -11,7 +11,10 @@ User=pi
 WorkingDirectory=/home/pi/meshlogger
 # Connessione al nodo MeshCore: tcp | serial | ble
 Environment=MC_CONN=tcp
-Environment=MC_HOST=<IP_DEL_NODO_MESHCORE>
+# MC_HOST: IP/hostname del nodo, oppure 'auto' per cercarlo sulla LAN.
+# Anche con un IP fisso, se non risponde il logger fa il fallback su scansione
+# della porta companion → robusto ai cambi di IP DHCP.
+Environment=MC_HOST=auto
 Environment=MC_TCP_PORT=5000
 Environment=MC_SENSOR=self
 Environment=MESH_INTERVAL=60

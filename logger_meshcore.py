@@ -8,12 +8,16 @@ BOZZA da validare alla prima connessione reale: la forma esatta del payload
 
 Connessione (env MC_CONN): serial | tcp | ble
   serial: MC_PORT=/dev/ttyACM0  MC_BAUD=115200
-  tcp:    MC_HOST=<ip>  MC_TCP_PORT=5000
+  tcp:    MC_HOST=<ip|hostname|auto>  MC_TCP_PORT=5000
+          (se MC_HOST è vuoto/'auto' o non risponde, il nodo viene cercato
+           automaticamente sulla LAN scandendo la porta companion → robusto ai
+           cambi di IP DHCP)
   ble:    MC_BLE_ADDR=<mac>  MC_BLE_PIN=<pin opz>
 Sensore (env MC_SENSOR): 'self' = nodo collegato al Pi;
   altrimenti nome (o prefisso pubkey) di un contatto remoto sulla mesh.
 """
-import os, time, json, sqlite3, asyncio, inspect, datetime
+import os, time, json, sqlite3, asyncio, inspect, datetime, socket
+import concurrent.futures as _cf
 from meshcore import MeshCore, EventType
 
 DB       = os.environ.get("MESH_DB", os.path.join(os.path.dirname(os.path.abspath(__file__)), "meshlogger.db"))
@@ -31,6 +35,55 @@ NODES_REFRESH = int(os.environ.get("MC_NODES_REFRESH", "300"))
 
 def log(*a):
     print(datetime.datetime.now().isoformat(timespec="seconds"), *a, flush=True)
+
+# --- Scoperta automatica del nodo sulla LAN (robustezza ai cambi di IP) ---
+def _local_ip():
+    """IP locale primario (senza inviare traffico): usato per dedurre la /24."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80)); return s.getsockname()[0]
+    except Exception:
+        return "127.0.0.1"
+    finally:
+        s.close()
+
+def _port_open(host, port, timeout=0.5):
+    try:
+        with socket.create_connection((host, int(port)), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+def discover_tcp_host(port, exclude=None):
+    """Scansiona la /24 locale cercando un nodo con la porta companion aperta.
+    Ritorna il primo IP trovato (numericamente più basso) o None."""
+    myip = _local_ip()
+    prefix = myip.rsplit(".", 1)[0]
+    skip = set(exclude or []); skip.add(myip)
+    hosts = [f"{prefix}.{i}" for i in range(1, 255)]
+    found = []
+    with _cf.ThreadPoolExecutor(max_workers=64) as ex:
+        for h, ok in zip(hosts, ex.map(lambda h: _port_open(h, port, 0.4), hosts)):
+            if ok and h not in skip:
+                found.append(h)
+    found.sort(key=lambda h: int(h.rsplit(".", 1)[1]))
+    return found[0] if found else None
+
+def resolve_tcp_host():
+    """Determina l'host del nodo: usa MC_HOST se raggiungibile, altrimenti lo cerca
+    sulla LAN scandendo la porta companion. Sincrona (chiamata via executor)."""
+    if HOST and HOST.lower() != "auto":
+        if _port_open(HOST, TCP_PORT, 1.0):
+            return HOST
+        log(f"MC_HOST={HOST} non risponde su :{TCP_PORT} → ricerca del nodo sulla LAN…")
+    else:
+        log("MC_HOST=auto → ricerca del nodo sulla LAN…")
+    h = discover_tcp_host(TCP_PORT, exclude=[HOST] if HOST else None)
+    if h:
+        log(f"nodo MeshCore trovato: {h}:{TCP_PORT}")
+        return h
+    log("nessun nodo trovato sulla LAN; riprovo con MC_HOST invariato")
+    return HOST
 
 async def _maybe(x):
     """Attende x se è una coroutine, altrimenti lo ritorna (API sync/async-agnostica)."""
@@ -380,7 +433,8 @@ async def make_mc():
     if CONN == "serial":
         mc = await _maybe(MeshCore.create_serial(PORT, baudrate=BAUD, auto_reconnect=True))
     elif CONN == "tcp":
-        mc = await _maybe(MeshCore.create_tcp(HOST, TCP_PORT, auto_reconnect=True))
+        host = await asyncio.get_event_loop().run_in_executor(None, resolve_tcp_host)
+        mc = await _maybe(MeshCore.create_tcp(host, TCP_PORT, auto_reconnect=True))
     elif CONN == "ble":
         mc = await _maybe(MeshCore.create_ble(address=BLE_ADDR, pin=BLE_PIN, auto_reconnect=True))
     else:

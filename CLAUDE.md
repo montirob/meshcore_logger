@@ -16,11 +16,11 @@ convertito a **MeshCore** (dal 2026-08-24).
 
 | Cosa | Valore |
 |---|---|
-| Raspberry Pi | `<IP_PI>` (`pi.local`), utente `pi` |
-| SSH (dal PC Windows) | `ssh -i ~/.ssh/<chiave> pi@<IP_PI>` (chiave, senza password) |
+| Raspberry Pi | `pi.local` (IP DHCP variabile), utente `pi` |
+| SSH (dal PC Windows) | `ssh -i ~/.ssh/<chiave> pi@pi.local` (chiave, senza password) |
 | Chiave SSH (Windows) | `<percorso-chiave-ssh>` (iniettata via cloud-init sulla SD perché la password era persa) |
 | Modello / OS | Raspberry Pi 3B · Debian 13 (trixie) · Python 3.13 |
-| Nodo MeshCore | `<IP_NODO>`, **porta companion TCP 5000** (era Meshtastic su 4403) |
+| Nodo MeshCore | IP DHCP variabile, **porta companion TCP 5000**. `MC_HOST=auto` → il logger lo **scopre** scandendo la LAN (fallback anche con IP fisso non raggiungibile) |
 | Nodo/sensore | nodo "MALO", pubkey `<PUBKEY>`; BME280 collegato → telemetria su **canale LPP 2** |
 | Dashboard LAN | http://<IP_PI>:8080 (o pi.local:8080) |
 | Dashboard/API remota | https://<TUO_DOMINIO>.ngrok-free.dev (ngrok) |
@@ -31,7 +31,8 @@ convertito a **MeshCore** (dal 2026-08-24).
 ## 2. Servizi systemd (`/etc/systemd/system/`)
 
 - **`meshcorelogger.service`** — logger MeshCore attivo (`logger_meshcore.py`).
-  Env: `MC_CONN=tcp MC_HOST=<IP_NODO> MC_TCP_PORT=5000 MC_SENSOR=self MESH_INTERVAL=60`.
+  Env: `MC_CONN=tcp MC_HOST=auto MC_TCP_PORT=5000 MC_SENSOR=self MESH_INTERVAL=60`
+  (`MC_HOST=auto` → il nodo viene scoperto sulla LAN; vedi §7 robustezza IP).
 - **`meshweb.service`** — backend Flask + dashboard su :8080 (`web.py`).
   Env: `WEB_PORT=8080 API_KEY=… PRESSURE_OFFSET=11 MESH_NODE_LABEL=…`.
 - **`meshngrok.service`** — tunnel ngrok verso il dominio fisso.
@@ -168,7 +169,7 @@ schedulato, richiesta stato ai ripetitori.
 ## 8. Workflow di modifica/deploy
 
 1. Modifica i file in locale (scratchpad), poi:
-   `scp -i ~/.ssh/<chiave> <file> pi@<IP_PI>:/home/pi/meshlogger/…`
+   `scp -i ~/.ssh/<chiave> <file> pi@pi.local:/home/pi/meshlogger/…`
 2. Riavvia il servizio giusto:
    - `web.py` o `templates/index.html` → `sudo systemctl restart meshweb`
    - `logger_meshcore.py` → `sudo systemctl restart meshcorelogger`

@@ -102,7 +102,7 @@ Non c'è nessun segreto nel codice: tutto passa da variabili d'ambiente.
 | Variabile | Default | Descrizione |
 |---|---|---|
 | `MC_CONN` | `serial` | Tipo connessione: `tcp` \| `serial` \| `ble` |
-| `MC_HOST` | — | (tcp) IP del nodo MeshCore |
+| `MC_HOST` | — | (tcp) IP/hostname del nodo, oppure `auto`. Se vuoto/`auto` o non raggiungibile, il nodo viene **cercato sulla LAN** scandendo la porta companion (robusto ai cambi di IP DHCP) |
 | `MC_TCP_PORT` | `5000` | (tcp) porta companion |
 | `MC_PORT` | `/dev/ttyACM0` | (serial) device |
 | `MC_BAUD` | `115200` | (serial) baud |
