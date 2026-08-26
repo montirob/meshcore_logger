@@ -474,6 +474,8 @@ async function loadMessages(forceBottom){
         r.textContent='🛤️ '+(m.path_len>0?(m.path_len+' salti'):'diretto')+snr;
       }
       div.appendChild(r);
+      r.style.cursor='pointer'; r.title='Mostra il percorso sulla mappa';
+      r.addEventListener('click',ev=>{ ev.stopPropagation(); showRoute(m); });
     }
     if(m.msg_id){ div.title='Clicca per rispondere'; div.addEventListener('click',()=>setReply(m)); }
     const whoEl=div.querySelector('.who');
@@ -627,6 +629,46 @@ function showNodeOnMap(id){
 }
 
 let map=null, mapMarkers={}, mapTracks={}, mapNodes={}, selNode=null, mapTimer=null, mapFilter='tracked';
+let selfNode=null, routeLayers=[];
+async function ensureSelf(){ if(selfNode) return selfNode; try{ selfNode=await (await apiFetch('/api/self')).json(); }catch(e){ selfNode={}; } return selfNode; }
+function clearRoute(){
+  if(!map) return;
+  routeLayers.forEach(l=>{ try{ map.removeLayer(l); }catch(e){} }); routeLayers=[];
+  if(mapTracks['_route']){ try{ map.removeLayer(mapTracks['_route']); }catch(e){} delete mapTracks['_route']; }
+}
+async function showRoute(m){
+  await ensureSelf();
+  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+  const mt=document.querySelector('.tab[data-tab="map"]'); if(mt) mt.classList.add('active');
+  document.getElementById('tab-charts').hidden=true;
+  document.getElementById('tab-messages').hidden=true;
+  document.getElementById('tab-net').hidden=true;
+  document.getElementById('tab-map').hidden=false;
+  ensureMap(); clearRoute();
+  const pts=[];
+  if(m.sender_lat!=null) pts.push({lat:m.sender_lat,lon:m.sender_lon,label:(m.sender_node||m.from_name||'mittente'),kind:'sender'});
+  let located=0;
+  (m.path_nodes||[]).forEach(h=>{ if(h.lat!=null){ located++; pts.push({lat:h.lat,lon:h.lon,label:(h.name||('#'+h.hash)),kind:'hop'}); } });
+  if(selfNode && selfNode.lat!=null) pts.push({lat:selfNode.lat,lon:selfNode.lon,label:(selfNode.name||'noi'),kind:'us'});
+  if(pts.length){
+    const latlngs=pts.map(p=>[p.lat,p.lon]);
+    if(latlngs.length>=2) mapTracks['_route']=L.polyline(latlngs,{color:css('--temp'),weight:4,opacity:.9,dashArray:'6 5'}).addTo(map);
+    pts.forEach((p,i)=>{
+      const col = p.kind==='sender'?css('--hum'):(p.kind==='us'?css('--pres'):css('--temp'));
+      const mk=L.circleMarker([p.lat,p.lon],{radius:(p.kind==='hop'?6:7),color:col,fillColor:col,fillOpacity:.9,weight:2}).addTo(map);
+      const role=p.kind==='sender'?'mittente':(p.kind==='us'?'noi (ricezione)':'ripetitore');
+      mk.bindPopup('<b>'+escapeHtml(p.label)+'</b><br>'+role); routeLayers.push(mk);
+    });
+    map.fitBounds(L.latLngBounds(latlngs).pad(0.25));
+  }
+  const seq=(m.path_nodes||[]).map(h=>h.name?escapeHtml(h.name):('#'+h.hash)).join(' → ');
+  document.getElementById('track-log-card').hidden=false;
+  document.getElementById('track-log-title').textContent='🛤️ Percorso messaggio · '+(m.from_name||'?');
+  document.getElementById('track-log').innerHTML='<div class="hint">'+(m.path_len||0)+' salti · '+located+' ripetitori localizzati'+
+    (m.snr!=null?(' · SNR '+Number(m.snr).toFixed(1)+' dB'):'')+(seq?('<br>'+seq):'')+
+    (pts.length<2?'<br><i>Posizioni insufficienti per tracciare il percorso.</i>':'')+'</div>';
+  setTimeout(()=>{ if(map) map.invalidateSize(); },150);
+}
 const AGE_STOPS=[
   {s:3600,label:'1 ora'},{s:3*3600,label:'3 ore'},{s:6*3600,label:'6 ore'},{s:12*3600,label:'12 ore'},
   {s:86400,label:'1 giorno'},{s:2*86400,label:'2 giorni'},{s:3*86400,label:'3 giorni'},

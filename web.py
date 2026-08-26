@@ -136,31 +136,57 @@ def messages():
     return jsonify(rows)
 
 def _resolve_paths(rows):
-    """Trasforma il campo `path` (hex degli hash dei salti) in `path_nodes`
-    [{hash, name}] risolvendo gli hash con i prefissi dei node_id (pubkey)."""
-    if not any(r.get("path") for r in rows):
+    """Arricchisce i messaggi con `path_nodes` [{hash,name,lat,lon}] (hash→nodo per
+    prefisso pubkey) e con la posizione del mittente (`sender_lat/lon/node`)."""
+    if not rows:
         return
-    idx = {}
     try:
-        for nr in q("SELECT node_id,long_name FROM nodes WHERE node_id IS NOT NULL"):
-            nid = (nr["node_id"] or "").lower()
-            nm = nr["long_name"] or nid
-            for klen in (2, 4):
-                idx.setdefault(nid[:klen], set()).add(nm)
+        nodes = q("SELECT node_id,long_name,lat,lon FROM nodes WHERE node_id IS NOT NULL")
     except Exception:
-        pass
+        nodes = []
+    idx = {}       # prefisso pubkey -> lista di record nodo
+    byname = {}    # long_name -> record nodo (per il mittente)
+    for nr in nodes:
+        nid = (nr["node_id"] or "").lower()
+        rec = {"name": nr["long_name"] or nid, "lat": nr["lat"], "lon": nr["lon"]}
+        if nr["long_name"]:
+            byname.setdefault(nr["long_name"], rec)
+        for klen in (2, 4):
+            idx.setdefault(nid[:klen], []).append(rec)
     for r in rows:
+        snd = byname.get(r.get("from_name"))
+        if snd and snd.get("lat") is not None:
+            r["sender_lat"] = snd["lat"]; r["sender_lon"] = snd["lon"]; r["sender_node"] = snd["name"]
         ph = (r.get("path") or "").lower()
         plen = r.get("path_len") or 0
         if not ph or not plen or len(ph) % plen != 0:
             continue
         step = len(ph) // plen
-        hops = [ph[i:i + step] for i in range(0, len(ph), step)]
         out = []
-        for h in hops:
-            names = idx.get(h)
-            out.append({"hash": h, "name": (next(iter(names)) if names and len(names) == 1 else None)})
+        for i in range(0, len(ph), step):
+            h = ph[i:i + step]
+            lst = idx.get(h)
+            if lst and len(lst) == 1:
+                rec = lst[0]
+                out.append({"hash": h, "name": rec["name"], "lat": rec["lat"], "lon": rec["lon"]})
+            else:
+                out.append({"hash": h, "name": None, "lat": None, "lon": None})
         r["path_nodes"] = out
+
+@app.route("/api/self")
+def api_self():
+    con = sqlite3.connect(DB)
+    def g(k):
+        try:
+            row = con.execute("SELECT value FROM meta WHERE key=?", (k,)).fetchone()
+            return row[0] if row else None
+        except Exception:
+            return None
+    name, lat, lon = g("self_name"), g("self_lat"), g("self_lon")
+    con.close()
+    return jsonify({"name": name,
+                    "lat": float(lat) if lat else None,
+                    "lon": float(lon) if lon else None})
 
 ROLE_NAMES = {0: "disabilitato", 1: "primario", 2: "secondario"}
 
