@@ -32,6 +32,11 @@ SENSOR   = os.environ.get("MC_SENSOR", "self")
 INTERVAL = int(os.environ.get("MESH_INTERVAL", "60"))
 NUM_CHANNELS = int(os.environ.get("MC_NUM_CHANNELS", "8"))
 NODES_REFRESH = int(os.environ.get("MC_NODES_REFRESH", "300"))
+# --- Robustezza / anti-blocco (connessione TCP che si "appende" senza chiudersi) ---
+CONNECT_TIMEOUT = int(os.environ.get("MC_CONNECT_TIMEOUT", "30"))                          # s max per connettersi
+CALL_TIMEOUT    = int(os.environ.get("MC_CALL_TIMEOUT", "25"))                             # s max per una richiesta al nodo
+STALE_RECONNECT = int(os.environ.get("MC_STALE_RECONNECT", str(max(240, INTERVAL * 4))))  # s senza dati salvati -> riconnessione forzata
+STALL_LIMIT     = int(os.environ.get("MC_STALL_LIMIT", str(max(300, INTERVAL * 5))))       # s senza progressi -> restart processo (watchdog)
 
 def log(*a):
     print(datetime.datetime.now().isoformat(timespec="seconds"), *a, flush=True)
@@ -88,6 +93,24 @@ def resolve_tcp_host():
 async def _maybe(x):
     """Attende x se è una coroutine, altrimenti lo ritorna (API sync/async-agnostica)."""
     return await x if inspect.iscoroutine(x) else x
+
+# --- Watchdog anti-blocco -------------------------------------------------
+# Se il loop principale non fa progressi per STALL_LIMIT secondi (tipico: await
+# appeso su un socket TCP half-open dopo un riavvio/drop del nodo), il processo
+# esce: systemd (Restart=always) lo riavvia pulito. NB: mentre il nodo è spento
+# il loop RITENTA attivamente -> è un progresso, quindi il watchdog NON scatta.
+_LAST_PROGRESS = time.time()
+def _progress():
+    global _LAST_PROGRESS
+    _LAST_PROGRESS = time.time()
+
+async def _watchdog():
+    while True:
+        await asyncio.sleep(15)
+        stalled = time.time() - _LAST_PROGRESS
+        if stalled > STALL_LIMIT:
+            log(f"WATCHDOG: nessun progresso da {int(stalled)}s (> {STALL_LIMIT}s) -> riavvio processo")
+            os._exit(1)
 
 def init_db():
     con = sqlite3.connect(DB)
@@ -465,7 +488,10 @@ async def get_telemetry(mc):
     manca nella risposta. Ritorna dict con temp/umidità/pressione o {}."""
     last_payload = None
     for attempt in range(4):
-        ev = await _one_request(mc)
+        try:
+            ev = await asyncio.wait_for(_one_request(mc), CALL_TIMEOUT)
+        except asyncio.TimeoutError:
+            log("telemetria: timeout richiesta al nodo"); ev = None
         if ev is None or _is_err(ev):
             await asyncio.sleep(1.5); continue
         last_payload = getattr(ev, "payload", ev)
@@ -479,16 +505,26 @@ async def get_telemetry(mc):
 async def main():
     con = init_db()
     log(f"logger MeshCore avviato: conn={CONN} sensor={SENSOR} interval={INTERVAL}s")
+    asyncio.create_task(_watchdog())
     mc = None
     myname = "MeshCore"
     last_nodes = 0
     last_auto_advert = 0
+    last_ok = time.time()
     while True:
         cycle = time.time()
+        _progress()
         try:
+            # "connesso" ma senza dati salvati da troppo tempo (socket half-open / nodo muto)
+            # -> forza una riconnessione completa (che ri-scopre anche l'IP del nodo)
+            if mc is not None and getattr(mc, "is_connected", False) and (time.time() - last_ok) > STALE_RECONNECT:
+                log(f"nessun dato salvato da {int(time.time()-last_ok)}s: riconnessione forzata")
+                try: await asyncio.wait_for(_maybe(mc.disconnect()), 10)
+                except Exception: pass
+                mc = None
             if mc is None or not getattr(mc, "is_connected", False):
                 log("connessione...")
-                mc = await make_mc()
+                mc = await asyncio.wait_for(make_mc(), CONNECT_TIMEOUT)
                 try:
                     si = getattr(mc, "self_info", None) or {}
                     myname = si.get("name") or myname
@@ -508,6 +544,7 @@ async def main():
                 except Exception as e:
                     log("subscribe/fetch err:", e)
                 log(f"connesso (nodo: {myname})")
+                last_ok = time.time()
             await process_outbox(mc, con, myname)
             await process_mc_commands(mc, con)
             # advertise automatico (configurabile da /api/mc/config)
@@ -524,6 +561,7 @@ async def main():
             m = await get_telemetry(mc)
             if m and any(m.get(k) is not None for k in ("temperature", "humidity", "pressure")):
                 save(con, m)
+                last_ok = time.time()
                 log(f"SAVED T={m.get('temperature')} RH={m.get('humidity')} P={m.get('pressure')}")
             else:
                 log("nessuna telemetria in questo ciclo")

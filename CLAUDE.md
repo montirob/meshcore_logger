@@ -158,6 +158,18 @@ rispondono invece all'ACK del DM (KDNZ ~0.9s). SQLite in **WAL + busy_timeout=80
 `/api/mc/...`, (d) UI nella tab Rete. Esempi facili: telemetria periodica a un nodo, path-discovery
 schedulato, richiesta stato ai ripetitori.
 
+### Robustezza connessione (anti-blocco)
+Sintomo tipico: servizio `active` ma **offline** (nessun `SAVED`), senza errori nei log.
+Causa: **TCP half-open** — il nodo riavvia/perde il WiFi senza chiudere il socket, `is_connected`
+resta `True`, l'`await` sulla telemetria si appende all'infinito. Tre difese in `logger_meshcore.py`:
+1. **Timeout** su connessione (`MC_CONNECT_TIMEOUT=30`) e su ogni richiesta al nodo (`MC_CALL_TIMEOUT=25`)
+   via `asyncio.wait_for` → un await appeso alza `TimeoutError` e innesca la riconnessione.
+2. **Riconnessione per staleness** (`MC_STALE_RECONNECT`, default `max(240, INTERVAL*4)`s): se "connesso"
+   ma senza dati salvati da troppo tempo, `disconnect()` + `mc=None` → riconnette (ri-scoprendo l'IP).
+3. **Watchdog di processo** (`MC_STALL_LIMIT`, default `max(300, INTERVAL*5)`s): task separato; se il loop
+   non fa progressi (`_progress()`), `os._exit(1)` → systemd riavvia. NB: mentre il nodo è spento il loop
+   RITENTA (è progresso) → il watchdog NON scatta. systemd: `Restart=always`, `StartLimitIntervalSec=0`.
+
 ### Quirk generali (validi anche in Meshtastic)
 - Il nodo accetta **UN SOLO client TCP** per volta → un unico daemon persistente. Per interrogare il
   nodo con uno script di test bisogna **fermare `meshcorelogger`** prima.
