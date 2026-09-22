@@ -32,6 +32,10 @@ SENSOR   = os.environ.get("MC_SENSOR", "self")
 INTERVAL = int(os.environ.get("MESH_INTERVAL", "60"))
 NUM_CHANNELS = int(os.environ.get("MC_NUM_CHANNELS", "8"))
 NODES_REFRESH = int(os.environ.get("MC_NODES_REFRESH", "300"))
+DM_CHANNEL = -1   # canale convenzionale dei messaggi diretti nella tabella `messages`
+# Range fisici del sensore: fuori da questi valori la lettura è un guasto (es. picchi
+# elettrici) e va scartata, non salvata.
+LIMITS = {"temperature": (-40.0, 85.0), "humidity": (0.0, 100.0), "pressure": (300.0, 1100.0)}
 # --- Robustezza / anti-blocco (connessione TCP che si "appende" senza chiudersi) ---
 CONNECT_TIMEOUT = int(os.environ.get("MC_CONNECT_TIMEOUT", "30"))                          # s max per connettersi
 CALL_TIMEOUT    = int(os.environ.get("MC_CALL_TIMEOUT", "25"))                             # s max per una richiesta al nodo
@@ -141,6 +145,10 @@ def init_db():
     con.execute("""CREATE TABLE IF NOT EXISTS outbox(
         id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER,
         channel INTEGER, text TEXT, status TEXT DEFAULT 'pending', error TEXT, reply_id INTEGER)""")
+    try:
+        con.execute("ALTER TABLE outbox ADD COLUMN to_id TEXT")   # destinatario dei messaggi diretti
+    except sqlite3.OperationalError:
+        pass
     con.execute("""CREATE TABLE IF NOT EXISTS nodes(
         node_id TEXT PRIMARY KEY, num INTEGER, long_name TEXT, short_name TEXT,
         hw TEXT, role TEXT, last_heard INTEGER, snr REAL, hops INTEGER,
@@ -205,6 +213,14 @@ def parse_lpp(payload):
         if "humidity" in d or "pressure" in d:
             return {k: d[k] for k in ("temperature", "humidity", "pressure") if k in d}
     return {}  # nessun dato ambientale in questa risposta
+
+def plausible(m):
+    """False se un valore è fuori dal range fisico del sensore (lettura corrotta)."""
+    for k, (lo, hi) in LIMITS.items():
+        v = m.get(k)
+        if v is not None and not (lo <= v <= hi):
+            return False
+    return True
 
 def save(con, m):
     now = int(time.time()); iso = datetime.datetime.now().isoformat(timespec="seconds")
@@ -277,14 +293,53 @@ def on_chan_msg(ev):
     except Exception as e:
         log("on_chan_msg err:", e)
 
-async def process_outbox(mc, con, myname):
-    """Invia i messaggi in coda sul canale indicato (send_chan_msg) e li registra."""
+def on_contact_msg(ev):
+    """Callback per i messaggi diretti (DM) ricevuti → tabella messages, canale -1."""
     try:
-        pend = con.execute("SELECT id,channel,text FROM outbox WHERE status='pending' ORDER BY id").fetchall()
+        pl = getattr(ev, "payload", None) or {}
+        if not isinstance(pl, dict):
+            return
+        nid = (pl.get("pubkey_prefix") or "")[:12]
+        text = pl.get("text", "") or ""
+        ts = int(pl.get("sender_timestamp") or time.time())
+        plen = pl.get("path_len")
+        if plen == 255:   # 255 = consegna diretta, senza salti
+            plen = 0
+        con = sqlite3.connect(DB)
+        try: con.execute("PRAGMA busy_timeout=8000")
+        except Exception: pass
+        row = con.execute("SELECT long_name FROM nodes WHERE node_id=?", (nid,)).fetchone()
+        name = (row[0] if row and row[0] else nid)
+        con.execute("""INSERT OR IGNORE INTO messages(ts,iso,from_id,from_name,to_id,channel,msg_id,text,outgoing,path_len,snr)
+                       VALUES(?,?,?,?,NULL,?,?,?,0,?,?)""",
+                    (ts, _iso(ts), nid, name, DM_CHANNEL, ts, text, plen, pl.get("SNR")))
+        con.commit(); con.close()
+        log(f"DM da {name}: {text} [salti={plen} snr={pl.get('SNR')}]")
+    except Exception as e:
+        log("on_contact_msg err:", e)
+
+async def process_outbox(mc, con, myname):
+    """Invia i messaggi in coda: sul canale (send_chan_msg) o diretti a un nodo
+    (send_msg, quando la riga ha `to_id`), e li registra in `messages`."""
+    try:
+        pend = con.execute("SELECT id,channel,text,to_id FROM outbox WHERE status='pending' ORDER BY id").fetchall()
     except Exception:
         return
-    for oid, ch, text in pend:
+    for oid, ch, text, to_id in pend:
         try:
+            if to_id:
+                contact = mc.get_contact_by_key_prefix(to_id)
+                if not contact:
+                    raise RuntimeError("contatto non trovato: " + str(to_id))
+                await asyncio.wait_for(_maybe(mc.commands.send_msg(contact, text)), CALL_TIMEOUT)
+                ts = int(time.time())
+                con.execute("UPDATE outbox SET status='sent' WHERE id=?", (oid,))
+                con.execute("""INSERT INTO messages(ts,iso,from_id,from_name,to_id,channel,msg_id,text,outgoing)
+                               VALUES(?,?,?,?,?,?,?,?,1)""",
+                            (ts, _iso(ts), None, myname, to_id, DM_CHANNEL, None, text))
+                con.commit()
+                log(f"DM a {contact.get('adv_name') or to_id}: {text}")
+                continue
             await _maybe(mc.commands.send_chan_msg(int(ch or 0), text))
             ts = int(time.time())
             con.execute("UPDATE outbox SET status='sent' WHERE id=?", (oid,))
@@ -339,6 +394,7 @@ async def dump_nodes_mc(mc, con):
                     con.execute("INSERT INTO positions(node_id,ts,lat,lon,alt) VALUES(?,?,?,?,NULL)", (nid, row[6] or now, lat, lon))
         con.execute("DELETE FROM positions WHERE ts < ?", (now - 31 * 86400,))
         con.commit()
+        set_meta(con, "contacts_count", len(rows))
         withpos = sum(1 for r in rows if r[12] is not None)
         log(f"nodi MeshCore aggiornati: {len(rows)} ({withpos} con posizione)")
     except Exception as e:
@@ -407,6 +463,8 @@ async def process_mc_commands(mc, con):
                     reachable = bool(ev) and (getattr(ev, "type", None) is not None) and (not _is_err(ev))
                     res = {"method": "path", "reachable": reachable, "seconds": dt,
                            "info": ("percorso trovato" if reachable else "nessuna risposta")}
+            elif action == "prune":
+                res = await prune_contacts(mc, con, int(params.get("days") or 0))
             else:
                 raise RuntimeError("azione sconosciuta: " + str(action))
             con.execute("UPDATE mc_commands SET status='done', result=?, done_ts=? WHERE id=?",
@@ -419,12 +477,60 @@ async def process_mc_commands(mc, con):
             con.commit()
             log(f"CMD #{cid} {action} ERR: {e}")
 
-def get_auto_advert_min(con):
+def get_meta_int(con, key, default=0):
     try:
-        row = con.execute("SELECT value FROM meta WHERE key='auto_advert_min'").fetchone()
-        return int(row[0]) if row and row[0] else 0
+        row = con.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        return int(row[0]) if row and row[0] else default
     except Exception:
-        return 0
+        return default
+
+def set_meta(con, key, value):
+    try:
+        con.execute("INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)", (key, str(value)))
+        con.commit()
+    except Exception:
+        pass
+
+async def prune_contacts(mc, con, days):
+    """Libera posti nella rubrica del nodo (limite firmware `max_contacts`, es. 350:
+    quando è piena il nodo NON registra più nuovi contatti). Rimuove dal nodo i
+    contatti non più sentiti da `days` giorni; i nodi tracciati restano, e lo storico
+    nella tabella `nodes` non viene toccato."""
+    if days <= 0:
+        return {"removed": 0, "reason": "giorni non validi"}
+    await asyncio.wait_for(_maybe(mc.commands.get_contacts()), CALL_TIMEOUT)
+    cs = getattr(mc, "contacts", None) or {}
+    items = list(cs.values()) if isinstance(cs, dict) else list(cs)
+    keep = {r[0] for r in con.execute("SELECT node_id FROM nodes WHERE tracked=1")}
+    cutoff = int(time.time()) - days * 86400
+    removed = errors = 0
+    for v in items:
+        if not isinstance(v, dict):
+            continue
+        pk = v.get("public_key") or ""
+        nid = pk[:12]
+        if not pk or nid in keep:
+            continue
+        if (v.get("last_advert") or 0) >= cutoff:
+            continue
+        try:
+            ev = await asyncio.wait_for(_maybe(mc.commands.remove_contact(pk)), CALL_TIMEOUT)
+            if _is_err(ev):
+                errors += 1
+            else:
+                removed += 1
+                # la libreria non toglie mai nulla dalla sua cache dei contatti
+                # (get_contacts fa solo merge): la allineo a mano, altrimenti il
+                # conteggio resta fermo al valore pre-pulizia.
+                if isinstance(cs, dict):
+                    cs.pop(pk, None)
+        except Exception:
+            errors += 1
+        _progress()   # la pulizia può essere lunga: tiene buono il watchdog
+    remaining = len(getattr(mc, "contacts", None) or {})
+    set_meta(con, "contacts_count", remaining)
+    log(f"rubrica nodo: rimossi {removed} contatti più vecchi di {days}g (restano {remaining}, errori {errors})")
+    return {"removed": removed, "errors": errors, "remaining": remaining, "days": days}
 
 async def dump_channels_mc(mc, con):
     """Interroga i canali MeshCore e li salva nella tabella `channels` (idx,name,role)
@@ -510,6 +616,7 @@ async def main():
     myname = "MeshCore"
     last_nodes = 0
     last_auto_advert = 0
+    last_auto_prune = 0
     last_ok = time.time()
     while True:
         cycle = time.time()
@@ -530,6 +637,13 @@ async def main():
                     myname = si.get("name") or myname
                 except Exception:
                     pass
+                try:   # limite di rubrica del firmware: serve a segnalare quando è piena
+                    ev = await asyncio.wait_for(_maybe(mc.commands.send_device_query()), CALL_TIMEOUT)
+                    pl = getattr(ev, "payload", None) or {}
+                    if isinstance(pl, dict) and pl.get("max_contacts"):
+                        set_meta(con, "max_contacts", pl["max_contacts"])
+                except Exception as e:
+                    log("device_query err:", e)
                 await dump_channels_mc(mc, con)
                 await dump_nodes_mc(mc, con); last_nodes = time.time()
                 try:
@@ -538,6 +652,7 @@ async def main():
                     log("decrypt_channel_logs err:", e)
                 try:
                     mc.subscribe(EventType.CHANNEL_MSG_RECV, on_chan_msg)
+                    mc.subscribe(EventType.CONTACT_MSG_RECV, on_contact_msg)
                     mc.subscribe(EventType.RX_LOG_DATA, on_rx_log)
                     await _maybe(mc.start_auto_message_fetching())
                     log("chat canali attiva")
@@ -548,7 +663,7 @@ async def main():
             await process_outbox(mc, con, myname)
             await process_mc_commands(mc, con)
             # advertise automatico (configurabile da /api/mc/config)
-            aam = get_auto_advert_min(con)
+            aam = get_meta_int(con, "auto_advert_min")
             if aam > 0 and (time.time() - last_auto_advert) >= aam * 60:
                 try:
                     await _maybe(mc.commands.send_advert(flood=False))
@@ -556,10 +671,20 @@ async def main():
                     log(f"AUTO-ADVERT inviato (ogni {aam} min)")
                 except Exception as e:
                     log("auto-advert err:", e)
+            # pulizia automatica della rubrica: tiene posti liberi per i nuovi nodi
+            apd = get_meta_int(con, "auto_prune_days")
+            if apd > 0 and (time.time() - last_auto_prune) >= 3600:
+                try:
+                    await prune_contacts(mc, con, apd)
+                except Exception as e:
+                    log("auto-prune err:", e)
+                last_auto_prune = time.time()
             if time.time() - last_nodes >= NODES_REFRESH:
                 await dump_nodes_mc(mc, con); last_nodes = time.time()
             m = await get_telemetry(mc)
-            if m and any(m.get(k) is not None for k in ("temperature", "humidity", "pressure")):
+            if m and not plausible(m):
+                log(f"lettura fuori scala, scartata: {m}")
+            elif m and any(m.get(k) is not None for k in ("temperature", "humidity", "pressure")):
                 save(con, m)
                 last_ok = time.time()
                 log(f"SAVED T={m.get('temperature')} RH={m.get('humidity')} P={m.get('pressure')}")

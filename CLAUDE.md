@@ -60,8 +60,9 @@ Tutti (tranne meshlogger) `enabled` → ripartono al boot. Token ngrok in `~/.co
 ## 4. Schema database (SQLite `meshlogger.db`)
 
 - `readings(ts PK, iso, temperature, humidity, pressure, metrics)` — 1 riga/minuto.
-- `messages(id PK, ts, iso, from_id, from_name, to_id, channel, msg_id, text, outgoing, reply_id, path, path_len, snr, UNIQUE(from_id,msg_id,text))` — `path`=hex hash dei salti, `path_len`=n. salti, `snr` dB
-- `outbox(id PK, ts, channel, text, status, error, reply_id)` — coda invio.
+- `messages(id PK, ts, iso, from_id, from_name, to_id, channel, msg_id, text, outgoing, reply_id, path, path_len, snr, UNIQUE(from_id,msg_id,text))` — `path`=hex hash dei salti, `path_len`=n. salti, `snr` dB.
+  **`channel = -1` (`DM_CHANNEL`) = messaggio diretto**: `from_id` = nodo mittente (in arrivo), `to_id` = nodo destinatario (in uscita).
+- `outbox(id PK, ts, channel, text, status, error, reply_id, to_id)` — coda invio; con `to_id` valorizzato è un DM (`send_msg`), altrimenti messaggio di canale.
 - `channels(idx PK, name, role)` — role 1=primario, 2=secondario, 0=disabilitato.
 - `nodes(node_id PK, num, long_name, short_name, hw, role, last_heard, snr, hops, battery, voltage, has_env, lat, lon, updated, tracked)`
 - `positions(id PK, node_id, ts, lat, lon, alt)` — storico posizioni tracciati, retention 31gg.
@@ -77,8 +78,10 @@ Tutti (tranne meshlogger) `enabled` → ripartono al boot. Token ngrok in `~/.co
 | `GET /api/readings?hours=N` | serie temporale (con dew point + medie mobili `t_ma`/`p_ma` centrate 10min) |
 | `GET /api/stats?period=day\|month\|year` | media/min/max aggregati |
 | `GET /api/records` | record assoluti/oggi + trend 1h |
-| `GET /api/messages?limit=N&channel=C` | messaggi (filtrabili per canale) |
+| `GET /api/messages?limit=N&channel=C` | messaggi (filtrabili per canale; `channel=-1` = DM, `peer=<node_id>` = conversazione diretta con un nodo) |
 | `POST /api/send` | invia `{text, channel, reply_id?}` → coda outbox |
+| `GET /api/dmpeers` | nodi con cui esiste una conversazione diretta (id, nome, ultimo ts, n. messaggi) |
+| `POST /api/dm` | invia `{node_id, text}` → coda outbox come messaggio diretto |
 | `GET /api/channels` | canali abilitati |
 | `GET /api/meshstats` | conteggi nodi/attivi/messaggi, top_senders, top_hw |
 | `GET /api/nodes?pos=1&tracked=1&limit=N` | elenco nodi |
@@ -88,7 +91,8 @@ Tutti (tranne meshlogger) `enabled` → ripartono al boot. Token ngrok in `~/.co
 | `POST /api/mc/advert` | `{flood}` → accoda un advertise |
 | `POST /api/mc/ping` | `{node_id}` → accoda un ping (path discovery) al nodo |
 | `GET /api/mc/commands?limit=N` | esito comandi MeshCore (coda) |
-| `GET\|POST /api/mc/config` | legge/imposta `{auto_advert_min}` (advertise automatico) |
+| `POST /api/mc/prune` | `{days}` → accoda la pulizia della rubrica del nodo (rimuove i contatti non visti da N giorni) |
+| `GET\|POST /api/mc/config` | legge/imposta `{auto_advert_min, auto_prune_days}`; in lettura riporta anche `contacts_count`/`max_contacts` |
 
 Per accesso via ngrok aggiungere header `ngrok-skip-browser-warning: true` (evita l'interstitial free).
 
@@ -99,13 +103,17 @@ Per accesso via ngrok aggiungere header `ngrok-skip-browser-warning: true` (evit
 - **📈 Grafici**: stat tile (temp/umidità/pressione/dew point), striscia record, 4 grafici con
   **zoom/pan**, **medie mobili centrate 10 min**, tabelle statistiche giorno/mese/anno.
   Pressione con **offset +11 hPa** applicato in serving (dati grezzi intatti).
-- **💬 Messaggi**: chat **per canale** (sotto-tab Public/Italia/Veneto), ordine cronologico
-  (recenti in basso), input sotto la chat, clic sul nome mittente → **popup info nodo**.
+- **💬 Messaggi**: la **chat è il primo blocco della pagina** (statistiche mesh sotto). Chat
+  **per canale** (sotto-tab Public/Italia/Veneto) più la sotto-tab **✉ Diretti** con una
+  conversazione per nodo (chip dei nodi sopra la chat); ordine cronologico (recenti in basso),
+  input sotto la chat, clic sul nome mittente → **popup info nodo**.
 - **🗺️ Mappa** (Leaflet + OSM): marker nodi, **filtri Tracciati/Con posizione/Tutti** (default
   "Tracciati"), **slider età** (1h→30gg), ricerca, flag **traccia**, percorsi, **auto-refresh 30s**.
 - **🛰️ Rete** (funzioni MeshCore): **Advertise** (manuale, con opz. flood) + **advertise automatico
-  ogni N minuti**; tabella **nodi** con badge tipo (Client/Ripetitore/Room/Sensore), filtro per tipo,
-  ricerca, e **Ping** per riga (path discovery → raggiungibile+tempo o "nessuna risposta"); log azioni.
+  ogni N minuti**; **occupazione rubrica** (`usati / max_contacts`) con **pulizia** dei contatti non
+  visti da N giorni (manuale o automatica ogni ora); tabella **nodi** con badge tipo
+  (Client/Ripetitore/Room/Sensore), filtro per tipo, ricerca, **Ping** per riga (path discovery →
+  raggiungibile+tempo o "nessuna risposta") e **✉** per aprire un messaggio diretto; log azioni.
 - Tema chiaro/scuro; chiave API salvata in localStorage (tasto 🔑).
 
 ---
@@ -136,15 +144,29 @@ Per accesso via ngrok aggiungere header `ngrok-skip-browser-warning: true` (evit
   (b) FALLBACK robusto: bufferizzo gli RX log GRP_TXT (`on_rx_log`) e li correlo per tempo in `on_chan_msg`
   (`_match_recent_log`). web `_resolve_paths` mappa gli hash→nome nodo per prefisso pubkey (node_id[:2]/[:4]).
   NB: verificabile solo con traffico reale di canale (mesh spesso silenziosa); il log MSG riporta `[salti=.. percorso=sì/no snr=..]`.
-- **Non ancora portato da MeshCore**: DM/messaggi diretti (`CONTACT_MSG_RECV`), batteria/SNR/has_env
-  per singolo nodo (servirebbero `req_status`/`req_telemetry` per contatto).
+- **DM (messaggi diretti)**: ricezione via `subscribe(EventType.CONTACT_MSG_RECV, on_contact_msg)`;
+  il payload ha `pubkey_prefix` (6 byte hex = **esattamente il `node_id`**), `text` (senza prefisso
+  "Nome: ", diverso dai canali), `sender_timestamp` (usato come `msg_id` per il dedup) e
+  `path_len` (**255 = consegna diretta** → lo normalizzo a 0). Invio: riga in `outbox` con `to_id`
+  → `mc.commands.send_msg(contact, testo)`; in `messages` i DM stanno su `channel=-1`.
+- **Rubrica del nodo piena (limite firmware)**: `send_device_query()` riporta `max_contacts`
+  (su questo Heltec V4: **350**). **Quando la rubrica è piena il firmware NON registra più nodi
+  nuovi** — sintomo: il numero di nodi resta fisso e i nodi nuovi non compaiono mai. Rimedio:
+  `prune_contacts()` rimuove dal nodo i contatti con `last_advert` più vecchio di N giorni
+  (`remove_contact(public_key)`, servono i 32 byte interi). I nodi `tracked` non si toccano e la
+  tabella `nodes` (storico dashboard) non viene svuotata.
+- **La cache dei contatti della libreria non si svuota mai**: `get_contacts()` fa solo *merge* in
+  `mc.contacts`, quindi dopo una `remove_contact` il conteggio resta quello vecchio finché non si
+  riconnette. Per questo `prune_contacts` fa `mc.contacts.pop(pk)` a mano.
+- **Non ancora portato da MeshCore**: batteria/SNR/has_env per singolo nodo (servirebbero
+  `req_status`/`req_telemetry` per contatto).
 
 ### Azioni di rete e AUTOMAZIONI (architettura estensibile)
 Il web non ha la connessione al nodo (un solo client TCP, tenuto dal logger) → le azioni passano da
 una **coda comandi** `mc_commands(id,ts,action,params,status,result,error,done_ts)`:
 1. il web accoda con `_enqueue(action, params)` (endpoint `/api/mc/*`);
 2. il logger `process_mc_commands()` (ogni ciclo) esegue l'azione sulla connessione e riscrive `result`.
-Azioni attuali: `advert` (`send_advert(flood)`), `ping` **type-aware** — il contatto si ottiene con
+Azioni attuali: `advert` (`send_advert(flood)`), `prune` (pulizia rubrica), `ping` **type-aware** — il contatto si ottiene con
 `mc.get_contact_by_key_prefix(node_id)`:
 - **companion (type 1)**: NON è un vero ping → invia un messaggio `"ping"` (`send_msg`) e attende l'**ACK
   di consegna** (subscribe `EventType.ACK`; l'ACK ha `code` = `expected_ack.hex()` del MSG_SENT, e `trip_time` ms).
@@ -152,8 +174,8 @@ Azioni attuali: `advert` (`send_advert(flood)`), `ping` **type-aware** — il co
 - **ripetitore/room (type 2/3)**: `send_path_discovery_sync(contact, 25s)` (silenzioso).
 Fatto empirico: i companion NON rispondono al path discovery (KDNZ, in portata, → nessuna risposta);
 rispondono invece all'ACK del DM (KDNZ ~0.9s). SQLite in **WAL + busy_timeout=8000** per evitare lock.
-**Advertise automatico**: chiave `meta.auto_advert_min`; nel loop `get_auto_advert_min()` + timer
-`last_auto_advert`. **Per aggiungere una nuova automazione periodica**: (a) nuova chiave in `meta`,
+**Automazioni periodiche**: chiavi in `meta` lette con `get_meta_int()` + timer nel loop —
+`auto_advert_min` (advertise) e `auto_prune_days` (pulizia rubrica, al più una volta l'ora). **Per aggiungere una nuova automazione periodica**: (a) nuova chiave in `meta`,
 (b) nuovo ramo in `process_mc_commands` (se on-demand) o un timer nel loop (se periodico), (c) endpoint
 `/api/mc/...`, (d) UI nella tab Rete. Esempi facili: telemetria periodica a un nodo, path-discovery
 schedulato, richiesta stato ai ripetitori.
@@ -175,6 +197,10 @@ resta `True`, l'`await` sulla telemetria si appende all'infinito. Tre difese in 
   nodo con uno script di test bisogna **fermare `meshcorelogger`** prima.
 - **Jinja cache i template** → dopo aver modificato `index.html` serve `sudo systemctl restart meshweb`.
 - Medie mobili **centrate** (±window/2), non trailing (una trailing "sembra sbagliata" perché in ritardo).
+- **Letture fuori scala**: i guasti elettrici producono valori assurdi (T=179, P=-142). Il logger
+  scarta la lettura se un valore esce dai range fisici del BME280 (`LIMITS`: T −40..85 °C,
+  RH 0..100 %, P 300..1100 hPa) — NON si usa il range climatico locale, o d'inverno si perderebbero
+  letture valide.
 
 ---
 
@@ -202,8 +228,13 @@ Chiave API (in `meshweb.service`) · token ngrok (`~/.config/ngrok/ngrok.yml`) �
 ## 10. Stato
 
 **Fatto (su MeshCore):** telemetria (temp/umidità/pressione), canali (Public/Italia/Veneto),
-chat canali (ricezione+invio), mappa/nodi (239 contatti, ~226 con posizione). Dashboard/web.py invariati.
+chat canali (ricezione+invio), **DM ai contatti** (ricezione+invio, tab ✉ Diretti e tasto ✉ nella
+tab Rete), mappa/nodi, **gestione della rubrica del nodo** (occupazione + pulizia manuale/automatica).
 
-**Possibili prossimi passi:** DM ai contatti; batteria/SNR/env per nodo sulla mappa; pulizia righe
-readings non valide (attorno al 2026-08-22: T=179, P=-142); scaffolding repo (requirements.txt,
-.gitignore, unit systemd sanitizzati).
+**Manutenzione fatta il 2026-09-22:** eliminate 247 letture corrotte da un guasto elettrico
+(226 con T fuori 10–50 °C + 21 con pressione fuori 900–1100 hPa; backup `meshlogger.db.bak-2026-09-22`
+sul Pi) e liberata la rubrica del nodo, piena a 350/350: rimossi 153 contatti inattivi da oltre
+14 giorni → 197, così i nodi nuovi tornano a registrarsi.
+
+**Possibili prossimi passi:** batteria/SNR/env per nodo sulla mappa; notifica/badge sui DM non letti;
+attivare la pulizia rubrica automatica (`auto_prune_days`) per non tornare a rubrica piena.

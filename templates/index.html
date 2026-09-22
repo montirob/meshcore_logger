@@ -145,7 +145,10 @@
   .b-Room{background:color-mix(in srgb,var(--dew) 22%,transparent);color:var(--dew)}
   .b-Sensor{background:color-mix(in srgb,var(--temp) 22%,transparent);color:var(--temp)}
   .b-other{background:color-mix(in srgb,var(--muted) 22%,transparent);color:var(--ink2)}
-  .pingbtn{font-size:12px;padding:3px 8px}
+  .pingbtn,.dmbtn{font-size:12px;padding:3px 8px}
+  .dmbtn{margin-left:4px}
+  .tabs{flex-wrap:wrap}
+  #dm-peers .empty{padding:4px 0}
   .pingres{font-size:11px;color:var(--muted);margin-left:6px}
 </style>
 </head>
@@ -206,11 +209,10 @@
   </section>
 
   <section id="tab-messages" hidden>
-    <div class="tiles" id="mesh-tiles"></div>
-
     <div class="card">
       <h2><span class="dot" style="background:var(--hum)"></span>Chat mesh</h2>
       <div class="tabs" id="msg-channels" style="margin-bottom:10px"></div>
+      <div class="tabs" id="dm-peers" style="margin-bottom:10px" hidden></div>
       <div id="msglist" class="msglist chatwin"><div class="empty">Caricamento…</div></div>
       <div id="reply-banner" class="replybar" hidden></div>
       <div class="sendrow" style="margin-top:10px">
@@ -218,7 +220,11 @@
         <button class="btn primary" id="send-btn">Invia</button>
       </div>
       <div class="sendstatus" id="send-status"></div>
+      <div class="hint" style="margin-top:6px">Il messaggio viene inviato sul canale (o al nodo) selezionato qui sopra. I tuoi messaggi inviati appaiono evidenziati.</div>
     </div>
+
+    <h3 class="sec">Statistiche della mesh</h3>
+    <div class="tiles" id="mesh-tiles"></div>
 
     <div class="grid2">
       <div class="card"><h2>🏆 Nodi più attivi</h2><div id="top-senders" class="ranklist"></div></div>
@@ -227,7 +233,6 @@
         <h2 style="margin-top:14px">🔧 Hardware più diffuso</h2><div id="top-hw" class="ranklist"></div>
       </div>
     </div>
-    <div class="hint" style="margin-top:6px">Il messaggio viene inviato sul canale selezionato qui sopra. I tuoi messaggi inviati appaiono evidenziati.</div>
   </section>
 
   <section id="tab-map" hidden>
@@ -269,6 +274,15 @@
         <span style="font-size:13px;color:var(--ink2)">minuti (0 = disattivato)</span>
         <button class="btn" id="autoadv-save">Salva</button>
       </div>
+      <div class="sendrow" style="margin-top:10px;align-items:center;flex-wrap:wrap">
+        <span style="font-size:13px;color:var(--ink2)">Rubrica del nodo: <b id="contacts-usage">–</b></span>
+        <button class="btn" id="prune-btn">🧹 Libera spazio</button>
+        <span style="font-size:13px;color:var(--ink2)">rimuovendo i contatti non visti da</span>
+        <input id="prune-days" class="inp" type="number" min="1" step="1" style="width:80px" value="14">
+        <span style="font-size:13px;color:var(--ink2)">giorni</span>
+        <label style="font-size:13px;color:var(--ink2);display:flex;align-items:center;gap:6px"><input type="checkbox" id="prune-auto"> automatico (ogni ora)</label>
+      </div>
+      <div class="hint">Quando la rubrica è piena il nodo non registra più nuovi contatti: i nodi nuovi non compaiono finché non si libera spazio. I nodi tracciati non vengono mai rimossi e lo storico della dashboard resta.</div>
       <div class="sendstatus" id="net-status"></div>
       <details style="margin-top:8px"><summary>Log azioni recenti</summary>
         <div id="cmd-log" class="ranklist" style="margin-top:6px"></div>
@@ -287,7 +301,7 @@
       <input id="net-search" class="inp" placeholder="Cerca nodo…" style="width:100%;margin-bottom:8px">
       <div class="tablewrap">
         <table class="stats" id="net-table" style="min-width:520px">
-          <thead><tr><th>Nodo</th><th>Tipo</th><th>Ultimo</th><th>Hop</th><th>Ping</th></tr></thead>
+          <thead><tr><th>Nodo</th><th>Tipo</th><th>Ultimo</th><th>Hop</th><th>Azioni</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -440,15 +454,18 @@ function fmtDateTime(ms){
   const d=new Date(ms); const p=n=>String(n).padStart(2,'0');
   return p(d.getDate())+'/'+p(d.getMonth()+1)+' '+p(d.getHours())+':'+p(d.getMinutes());
 }
-let curMsgChannel = null;
+let curMsgChannel = null;   // indice canale, oppure 'dm' per i messaggi diretti
+let curDmPeer = null;       // {id,name} del nodo con cui si conversa in privato
 async function loadMessages(forceBottom){
   let rows;
-  const chParam = (curMsgChannel!=null) ? ('&channel='+curMsgChannel) : '';
+  const chParam = (curMsgChannel==='dm')
+    ? (curDmPeer ? ('&peer='+encodeURIComponent(curDmPeer.id)) : '&channel=-1')
+    : ((curMsgChannel!=null) ? ('&channel='+curMsgChannel) : '');
   try { rows = await (await apiFetch('/api/messages?limit=200'+chParam)).json(); }
   catch(e){ return; }
   const el = document.getElementById('msglist');
   const nearBottom = (el.scrollHeight - el.scrollTop - el.clientHeight) < 80;
-  if(!rows.length){ el.innerHTML='<div class="empty">Nessun messaggio in questo canale.</div>'; return; }
+  if(!rows.length){ el.innerHTML='<div class="empty">'+(curMsgChannel==='dm'?'Nessun messaggio diretto con questo nodo.':'Nessun messaggio in questo canale.')+'</div>'; return; }
   el.innerHTML='';
   const byId={}; rows.forEach(m=>{ if(m.msg_id) byId[m.msg_id]=m; });
   rows.slice().reverse().forEach(m=>{   // dal più vecchio (in alto) al più recente (in basso)
@@ -511,15 +528,62 @@ async function loadChannels(){
     d.querySelector('.rn').textContent=c.name; cl.appendChild(d);
     const b=document.createElement('button'); b.className='tab'+(c.idx===curMsgChannel?' active':'');
     b.textContent=c.name; b.dataset.ch=c.idx;
-    b.addEventListener('click',()=>{
-      curMsgChannel=c.idx;
-      document.querySelectorAll('#msg-channels .tab').forEach(x=>x.classList.remove('active'));
-      b.classList.add('active');
-      loadMessages(true);
-    });
+    b.addEventListener('click',()=>{ selectChannel(c.idx); });
     mc.appendChild(b);
   });
-  if(!rows.length){ cl.innerHTML='<div class="empty">Nessun canale.</div>'; mc.innerHTML=''; }
+  if(!rows.length) cl.innerHTML='<div class="empty">Nessun canale.</div>';
+  const dm=document.createElement('button'); dm.className='tab'+(curMsgChannel==='dm'?' active':'');
+  dm.textContent='✉ Diretti'; dm.title='Messaggi privati con un singolo nodo'; dm.dataset.ch='dm';
+  dm.addEventListener('click',()=>{ selectChannel('dm'); });
+  mc.appendChild(dm);
+  updateSendHint();
+}
+function selectChannel(ch){
+  curMsgChannel=ch;
+  document.querySelectorAll('#msg-channels .tab').forEach(x=>x.classList.remove('active'));
+  const b = [...document.querySelectorAll('#msg-channels .tab')].find(x=>x.dataset.ch==ch);
+  if(b) b.classList.add('active');
+  document.getElementById('dm-peers').hidden = (ch!=='dm');
+  if(ch==='dm') loadDmPeers().then(()=>loadMessages(true)); else loadMessages(true);
+  updateSendHint();
+}
+function updateSendHint(){
+  const el=document.getElementById('send-text');
+  el.placeholder = (curMsgChannel==='dm')
+    ? (curDmPeer ? ('Messaggio diretto a '+curDmPeer.name+'…') : 'Scegli prima un nodo destinatario')
+    : 'Scrivi un messaggio nel canale selezionato…';
+}
+async function loadDmPeers(){
+  let rows=[]; try{ rows = await (await apiFetch('/api/dmpeers')).json(); }catch(e){}
+  if(curDmPeer && !rows.some(p=>p.node_id===curDmPeer.id)) rows.unshift({node_id:curDmPeer.id, name:curDmPeer.name});
+  const el=document.getElementById('dm-peers'); el.innerHTML='';
+  if(!rows.length){
+    curDmPeer=null;
+    el.innerHTML='<div class="empty">Nessuna conversazione diretta. Apri la tab 🛰️ Rete e premi ✉ sul nodo a cui vuoi scrivere.</div>';
+    updateSendHint(); return;
+  }
+  if(!curDmPeer) curDmPeer={id:rows[0].node_id, name:rows[0].name||rows[0].node_id};
+  rows.forEach(p=>{
+    const b=document.createElement('button'); b.className='tab'+(p.node_id===curDmPeer.id?' active':'');
+    b.textContent=p.name||p.node_id;
+    b.addEventListener('click',()=>{
+      curDmPeer={id:p.node_id, name:p.name||p.node_id};
+      document.querySelectorAll('#dm-peers .tab').forEach(x=>x.classList.remove('active'));
+      b.classList.add('active'); updateSendHint(); loadMessages(true);
+    });
+    el.appendChild(b);
+  });
+  updateSendHint();
+}
+function openDm(node_id, name){
+  closeNodeInfo();
+  curMsgChannel='dm'; curDmPeer={id:node_id, name:name||node_id};
+  document.querySelectorAll('#tabs .tab').forEach(x=>x.classList.remove('active'));
+  const mt=document.querySelector('#tabs .tab[data-tab="messages"]'); if(mt) mt.classList.add('active');
+  ['charts','messages','map','net'].forEach(t=>{ document.getElementById('tab-'+t).hidden = (t!=='messages'); });
+  document.getElementById('dm-peers').hidden=false;
+  loadChannels().then(()=>loadDmPeers()).then(()=>{ loadMessages(true); document.getElementById('send-text').focus(); });
+  loadMeshStats();
 }
 async function loadMeshStats(){
   let s; try{ s = await (await apiFetch('/api/meshstats')).json(); }catch(e){ return; }
@@ -544,12 +608,17 @@ async function sendMessage(){
   const ch=(curMsgChannel!=null)?curMsgChannel:0;
   const st=document.getElementById('send-status');
   if(!text){ st.textContent='Scrivi un messaggio.'; return; }
+  const isDm = (curMsgChannel==='dm');
+  if(isDm && !curDmPeer){ st.textContent='Scegli il nodo destinatario.'; return; }
   st.textContent='Invio in coda…';
   try{
     const k=localStorage.getItem('apikey')||'';
-    const r=await fetch('/api/send'+(k?('?key='+encodeURIComponent(k)):''),{
+    const url=(isDm?'/api/dm':'/api/send')+(k?('?key='+encodeURIComponent(k)):'');
+    const payload = isDm ? {text, node_id:curDmPeer.id}
+                         : {text, channel:ch, reply_id:(replyTarget?replyTarget.id:null)};
+    const r=await fetch(url,{
       method:'POST', headers:{'Content-Type':'application/json','ngrok-skip-browser-warning':'true'},
-      body:JSON.stringify({text, channel:ch, reply_id:(replyTarget?replyTarget.id:null)})
+      body:JSON.stringify(payload)
     });
     if(r.status===401){ promptKey(); return; }
     const j=await r.json();
@@ -608,9 +677,12 @@ async function openNodeInfo(id){
   } else {
     h+='<div class="hint" style="margin-top:8px">Posizione non disponibile per questo nodo.</div>';
   }
+  if(n.role==='Chat'||n.role==='Room') h+='<button class="btn" id="nm-dm" style="margin-top:8px">✉ Messaggio diretto</button>';
   document.getElementById('nm-body').innerHTML=h;
   const mb=document.getElementById('nm-map');
   if(mb) mb.addEventListener('click',()=>showNodeOnMap(n.node_id||id));
+  const db=document.getElementById('nm-dm');
+  if(db) db.addEventListener('click',()=>openDm(n.node_id||id, n.long_name||n.node_id||id));
   document.getElementById('node-modal').hidden=false;
 }
 function closeNodeInfo(){ document.getElementById('node-modal').hidden=true; }
@@ -808,14 +880,48 @@ async function doAdvert(){
 }
 async function loadMcConfig(){
   try{ const c=await (await apiFetch('/api/mc/config')).json();
-    document.getElementById('autoadv-min').value = c.auto_advert_min ?? 0; }catch(e){}
+    document.getElementById('autoadv-min').value = c.auto_advert_min ?? 0;
+    const auto=(c.auto_prune_days||0)>0;
+    document.getElementById('prune-auto').checked = auto;
+    if(auto) document.getElementById('prune-days').value = c.auto_prune_days;
+    const u=document.getElementById('contacts-usage');
+    if(c.max_contacts){
+      u.textContent = c.contacts_count+' / '+c.max_contacts+(c.contacts_count>=c.max_contacts?' — PIENA':'');
+      u.style.color = (c.contacts_count>=c.max_contacts) ? 'var(--temp)' : '';
+    } else u.textContent = (c.contacts_count||0)+' contatti';
+  }catch(e){}
 }
 async function saveMcConfig(){
   const st=document.getElementById('net-status');
   const v=parseInt(document.getElementById('autoadv-min').value)||0;
-  try{ const c=await mcPost('/api/mc/config',{auto_advert_min:v});
-    st.textContent = c.auto_advert_min>0 ? ('✓ Advertise automatico ogni '+c.auto_advert_min+' min.') : '✓ Advertise automatico disattivato.'; }
+  const pd=parseInt(document.getElementById('prune-days').value)||14;
+  const auto=document.getElementById('prune-auto').checked;
+  try{ const c=await mcPost('/api/mc/config',{auto_advert_min:v, auto_prune_days:(auto?pd:0)});
+    st.textContent = (c.auto_advert_min>0 ? ('✓ Advertise automatico ogni '+c.auto_advert_min+' min.') : '✓ Advertise automatico disattivato.')
+      + (c.auto_prune_days>0 ? (' Pulizia rubrica automatica oltre '+c.auto_prune_days+' giorni.') : ' Pulizia rubrica automatica disattivata.'); }
   catch(e){ st.textContent='Errore salvataggio.'; }
+}
+async function doPrune(){
+  const st=document.getElementById('net-status');
+  const days=parseInt(document.getElementById('prune-days').value)||0;
+  if(days<1){ st.textContent='Indica dopo quanti giorni rimuovere un contatto.'; return; }
+  if(!confirm('Verranno rimossi DAL NODO i contatti non più sentiti da '+days+' giorni (i nodi tracciati restano).\n\nLo storico della dashboard non viene toccato e i nodi tornano appena si annunciano di nuovo.\n\nProcedere?')) return;
+  st.textContent='Pulizia in coda…';
+  let id; try{ const r=await mcPost('/api/mc/prune',{days}); id=r.id; }
+  catch(e){ st.textContent='Errore avvio pulizia.'; return; }
+  const t0=Date.now();
+  const poll=async()=>{
+    if(Date.now()-t0>180000){ st.textContent='Pulizia ancora in corso: controlla il log azioni.'; return; }
+    let rows; try{ rows=await (await apiFetch('/api/mc/commands?limit=25')).json(); }catch(e){ setTimeout(poll,5000); return; }
+    const c=rows.find(x=>x.id===id);
+    if(c && c.status!=='pending'){
+      let r=null; try{ r=c.result?JSON.parse(c.result):null; }catch(e){}
+      st.textContent = (c.status==='error') ? ('✗ '+(c.error||'errore'))
+        : ('✓ Rimossi '+(r?r.removed:'?')+' contatti, in rubrica '+(r?r.remaining:'?')+'.');
+      loadMcConfig(); loadCmdLog(); loadNetNodes();
+    } else setTimeout(poll,5000);
+  };
+  setTimeout(poll,5000);
 }
 async function loadCmdLog(){
   let rows; try{ rows=await (await apiFetch('/api/mc/commands?limit=12')).json(); }catch(e){ return; }
@@ -825,11 +931,13 @@ async function loadCmdLog(){
     let r=''; try{ r=c.result?JSON.parse(c.result):null; }catch(e){}
     let desc=c.status;
     if(c.action==='ping'&&r) desc = (r.reachable?'✓ ':'✗ ') + (r.info||'') + (r.reachable?(' ('+r.seconds+'s)'):'');
+    else if(c.action==='prune'&&r) desc = 'rimossi '+r.removed+', in rubrica '+r.remaining;
     else if(c.action==='advert'&&c.status==='done') desc='inviato';
     else if(c.error) desc='errore: '+c.error;
+    const LBL={advert:'📢 Advertise', ping:'📡 Ping', prune:'🧹 Pulizia rubrica'};
     const d=document.createElement('div'); d.className='rank';
     d.innerHTML='<span class="rn"></span><span class="rv"></span>';
-    d.querySelector('.rn').textContent=(c.action==='advert'?'📢 Advertise':'📡 Ping')+' · '+fmtDateTime(c.ts*1000);
+    d.querySelector('.rn').textContent=(LBL[c.action]||c.action)+' · '+fmtDateTime(c.ts*1000);
     d.querySelector('.rv').textContent=desc;
     el.appendChild(d);
   });
@@ -851,12 +959,16 @@ async function loadNetNodes(){
     tr.innerHTML='<td></td><td><span class="badge '+bcls+'">'+label+'</span></td>'+
                  '<td>'+(nd.last_heard?ago(nd.last_heard):'?')+'</td>'+
                  '<td>'+(nd.hops!=null?nd.hops:'')+'</td>'+
-                 '<td><button class="btn pingbtn">Ping</button><span class="pingres"></span></td>';
+                 '<td><button class="btn pingbtn">Ping</button>'+
+                 ((role==='Chat'||role==='Room')?'<button class="btn dmbtn" title="Invia un messaggio diretto">✉</button>':'')+
+                 '<span class="pingres"></span></td>';
     const nameTd=tr.querySelector('td'); nameTd.textContent=nd.long_name||nd.node_id;
     nameTd.style.cursor='pointer'; nameTd.title='Info nodo';
     nameTd.addEventListener('click',()=>openNodeInfo(nd.node_id));
     const btn=tr.querySelector('.pingbtn');
     btn.addEventListener('click',()=>doPing(nd.node_id, role, btn, tr.querySelector('.pingres')));
+    const dmb=tr.querySelector('.dmbtn');
+    if(dmb) dmb.addEventListener('click',()=>openDm(nd.node_id, nd.long_name||nd.node_id));
     tb.appendChild(tr);
   });
   if(!tb.children.length) tb.innerHTML='<tr><td colspan="5" style="text-align:center;color:var(--muted)">Nessun nodo</td></tr>';
@@ -898,7 +1010,10 @@ function initTabs(){
     document.getElementById('tab-net').hidden      = (tab!=='net');
     if(tab==='net'){ loadNet(); if(!netTimer) netTimer=setInterval(()=>{ if(!document.getElementById('tab-net').hidden){ loadCmdLog(); } }, 5000); }
     if(tab==='messages'){
-      loadChannels().then(()=>loadMessages(true)); loadMeshStats();
+      loadChannels()
+        .then(()=>{ const dm=(curMsgChannel==='dm'); document.getElementById('dm-peers').hidden=!dm; if(dm) return loadDmPeers(); })
+        .then(()=>loadMessages(true));
+      loadMeshStats();
       if(!msgTimer) msgTimer=setInterval(()=>{ loadMessages(); loadMeshStats(); }, 30000);
     }
     if(tab==='map'){
@@ -930,6 +1045,8 @@ function initTabs(){
   document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeNodeInfo(); });
   document.getElementById('advert-btn').addEventListener('click', doAdvert);
   document.getElementById('autoadv-save').addEventListener('click', saveMcConfig);
+  document.getElementById('prune-btn').addEventListener('click', doPrune);
+  document.getElementById('prune-auto').addEventListener('change', saveMcConfig);
   document.getElementById('net-filter').addEventListener('click', e=>{
     const b=e.target.closest('button'); if(!b) return;
     document.querySelectorAll('#net-filter .btn').forEach(x=>x.classList.remove('active'));

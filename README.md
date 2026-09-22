@@ -28,10 +28,11 @@ per giorno / mese / anno (media · min · max). Il punto di rugiada è calcolato
 ![Tab Messaggi](docs/img/02-messaggi.png)
 
 Chat dei canali mesh in stile chat (Public / Italia / Veneto come sotto-tab), ordine
-cronologico con input in fondo e invio sul canale selezionato. Sotto ogni messaggio è
-ricostruito il **percorso dei salti** (`N salti: Nodo → Nodo → … · SNR`) usando gli RX log
-e le posizioni note dei nodi. In alto i contatori (nodi totali/attivi/messaggi), a fondo
-pagina i **nodi più attivi** e i **canali abilitati**.
+cronologico con input in fondo e invio sul canale selezionato. La sotto-tab **✉ Diretti**
+contiene i **messaggi privati** (DM) con un singolo nodo, una conversazione per nodo. Sotto
+ogni messaggio è ricostruito il **percorso dei salti** (`N salti: Nodo → Nodo → … · SNR`)
+usando gli RX log e le posizioni note dei nodi. Le statistiche della mesh (contatori, nodi
+più attivi, canali abilitati) stanno sotto la chat.
 
 ### 🗺️ Mappa
 
@@ -49,7 +50,11 @@ Auto-refresh ogni 30s.
 Funzioni MeshCore: **Advertise** manuale (con opzione *flood*) e **advertise automatico**
 ogni N minuti; **tabella dei nodi** con badge tipo (Client / Ripetitore / Room / Sensore),
 filtro per tipo e ricerca; pulsante **Ping** per riga per il path discovery (ai companion
-invia un messaggio "ping" e attende l'ACK, previo avviso). Log delle azioni recenti.
+invia un messaggio "ping" e attende l'ACK, previo avviso) e **✉** per aprire un messaggio
+diretto. Mostra anche l'occupazione della **rubrica del nodo** (`usati / max_contacts`): il
+firmware ha un limite di contatti e **quando è piena non registra più nodi nuovi**, perciò
+c'è la **pulizia** dei contatti non visti da N giorni, manuale o automatica (i nodi tracciati
+non vengono mai rimossi). Log delle azioni recenti.
 
 ---
 

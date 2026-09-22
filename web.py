@@ -9,6 +9,7 @@ NODE = os.environ.get("MESH_NODE_LABEL", "Nodo sensore")
 PORT = int(os.environ.get("WEB_PORT", "8080"))
 API_KEY = os.environ.get("API_KEY", "").strip()   # se vuoto: /api aperto (solo LAN)
 PRESSURE_OFFSET = float(os.environ.get("PRESSURE_OFFSET", "11"))  # correzione altitudine (hPa)
+DM_CHANNEL = -1   # canale convenzionale dei messaggi diretti in `messages`
 
 def padj(v):
     return round(v + PRESSURE_OFFSET, 4) if (v is not None and PRESSURE_OFFSET) else v
@@ -126,14 +127,49 @@ def messages():
     limit = request.args.get("limit", default=100, type=int)
     limit = max(1, min(limit, 500))
     channel = request.args.get("channel", type=int)
+    peer = request.args.get("peer")           # conversazione diretta con un nodo
     cols = ("SELECT ts,iso,from_id,from_name,to_id,channel,msg_id,text,"
             "COALESCE(outgoing,0) outgoing,reply_id,path,path_len,snr FROM messages")
-    if channel is not None:
+    if peer:
+        rows = q(cols + " WHERE channel=? AND (from_id=? OR to_id=?) ORDER BY ts DESC LIMIT ?",
+                 (DM_CHANNEL, peer, peer, limit))
+    elif channel is not None:
         rows = q(cols + " WHERE channel=? ORDER BY ts DESC LIMIT ?", (channel, limit))
     else:
         rows = q(cols + " ORDER BY ts DESC LIMIT ?", (limit,))
     _resolve_paths(rows)
     return jsonify(rows)
+
+@app.route("/api/dmpeers")
+def dmpeers():
+    """Nodi con cui esiste una conversazione diretta (per le sotto-schede della chat)."""
+    return jsonify(q("""SELECT COALESCE(m.from_id, m.to_id) AS node_id,
+                               COALESCE(n.long_name, COALESCE(m.from_id, m.to_id)) AS name,
+                               MAX(m.ts) AS last_ts, COUNT(*) AS n
+                        FROM messages m
+                        LEFT JOIN nodes n ON n.node_id = COALESCE(m.from_id, m.to_id)
+                        WHERE m.channel=? AND COALESCE(m.from_id, m.to_id) IS NOT NULL
+                        GROUP BY node_id ORDER BY last_ts DESC LIMIT 50""", (DM_CHANNEL,)))
+
+@app.route("/api/dm", methods=["POST", "OPTIONS"])
+def dm():
+    """Accoda un messaggio diretto a un nodo (il logger lo invia con send_msg)."""
+    if request.method == "OPTIONS":
+        return ("", 204)
+    data = request.get_json(silent=True) or {}
+    text = (data.get("text") or "").strip()
+    node_id = (data.get("node_id") or "").strip()
+    if not node_id:
+        return jsonify({"error": "node_id mancante"}), 400
+    if not text:
+        return jsonify({"error": "testo vuoto"}), 400
+    if len(text.encode("utf-8")) > 220:
+        return jsonify({"error": "messaggio troppo lungo (max ~220 byte)"}), 400
+    con = sqlite3.connect(DB)
+    con.execute("INSERT INTO outbox(ts,channel,text,status,to_id) VALUES(?,?,?,'pending',?)",
+                (int(datetime.datetime.now().timestamp()), DM_CHANNEL, text, node_id))
+    con.commit(); con.close()
+    return jsonify({"queued": True})
 
 def _resolve_paths(rows):
     """Arricchisce i messaggi con `path_nodes` [{hash,name,lat,lon}] (hash→nodo per
@@ -447,6 +483,22 @@ def mc_commands_list():
         rows = []
     return jsonify(rows)
 
+@app.route("/api/mc/prune", methods=["POST", "OPTIONS"])
+def mc_prune():
+    """Libera posti nella rubrica del nodo rimuovendo i contatti più vecchi di N giorni."""
+    if request.method == "OPTIONS":
+        return ("", 204)
+    data = request.get_json(silent=True) or {}
+    try:
+        days = int(data.get("days") or 0)
+    except (TypeError, ValueError):
+        days = 0
+    if days < 1:
+        return jsonify({"error": "giorni non validi"}), 400
+    return jsonify({"queued": True, "id": _enqueue("prune", {"days": days})})
+
+CONFIG_KEYS = ("auto_advert_min", "auto_prune_days")
+
 @app.route("/api/mc/config", methods=["GET", "POST", "OPTIONS"])
 def mc_config():
     if request.method == "OPTIONS":
@@ -454,15 +506,26 @@ def mc_config():
     con = sqlite3.connect(DB); _ensure_mc(con)
     if request.method == "POST":
         data = request.get_json(silent=True) or {}
-        try:
-            v = str(max(0, int(data.get("auto_advert_min", 0))))
-        except (TypeError, ValueError):
-            v = "0"
-        con.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('auto_advert_min',?)", (v,))
+        for k in CONFIG_KEYS:
+            if k not in data:
+                continue
+            try:
+                v = str(max(0, int(data.get(k) or 0)))
+            except (TypeError, ValueError):
+                v = "0"
+            con.execute("INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)", (k, v))
         con.commit()
-    row = con.execute("SELECT value FROM meta WHERE key='auto_advert_min'").fetchone()
+    def g(k, default=0):
+        row = con.execute("SELECT value FROM meta WHERE key=?", (k,)).fetchone()
+        try:
+            return int(row[0]) if row and row[0] else default
+        except (TypeError, ValueError):
+            return default
+    out = {k: g(k) for k in CONFIG_KEYS}
+    out["contacts_count"] = g("contacts_count")
+    out["max_contacts"] = g("max_contacts")
     con.close()
-    return jsonify({"auto_advert_min": int(row[0]) if row and row[0] else 0})
+    return jsonify(out)
 
 @app.route("/static/<path:p>")
 def static_files(p):
