@@ -31,8 +31,9 @@ Chat dei canali mesh in stile chat (Public / Italia / Veneto come sotto-tab), or
 cronologico con input in fondo e invio sul canale selezionato. La sotto-tab **✉ Diretti**
 contiene i **messaggi privati** (DM) con un singolo nodo, una conversazione per nodo. Sotto
 ogni messaggio è ricostruito il **percorso dei salti** (`N salti: Nodo → Nodo → … · SNR`)
-usando gli RX log e le posizioni note dei nodi. Le statistiche della mesh (contatori, nodi
-più attivi, canali abilitati) stanno sotto la chat.
+usando gli RX log e le posizioni note dei nodi. Il tasto **🗑 Svuota chat** cancella (con
+conferma) i messaggi della sola conversazione aperta. Le statistiche della mesh (contatori,
+nodi più attivi, canali abilitati) stanno sotto la chat.
 
 ### 🗺️ Mappa
 

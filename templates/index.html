@@ -145,7 +145,8 @@
   .b-Room{background:color-mix(in srgb,var(--dew) 22%,transparent);color:var(--dew)}
   .b-Sensor{background:color-mix(in srgb,var(--temp) 22%,transparent);color:var(--temp)}
   .b-other{background:color-mix(in srgb,var(--muted) 22%,transparent);color:var(--ink2)}
-  .pingbtn,.dmbtn{font-size:12px;padding:3px 8px}
+  .pingbtn,.dmbtn,.clearbtn{font-size:12px;padding:3px 8px}
+  .clearbtn{margin-left:auto}
   .dmbtn{margin-left:4px}
   .tabs{flex-wrap:wrap}
   #dm-peers .empty{padding:4px 0}
@@ -210,7 +211,9 @@
 
   <section id="tab-messages" hidden>
     <div class="card">
-      <h2><span class="dot" style="background:var(--hum)"></span>Chat mesh</h2>
+      <h2><span class="dot" style="background:var(--hum)"></span>Chat mesh
+        <button class="btn clearbtn" id="clear-chat" title="Elimina i messaggi della conversazione aperta">🗑 Svuota chat</button>
+      </h2>
       <div class="tabs" id="msg-channels" style="margin-bottom:10px"></div>
       <div class="tabs" id="dm-peers" style="margin-bottom:10px" hidden></div>
       <div id="msglist" class="msglist chatwin"><div class="empty">Caricamento…</div></div>
@@ -626,6 +629,22 @@ async function sendMessage(){
     else st.textContent='Errore: '+(j.error||'invio fallito');
   }catch(e){ st.textContent='Errore di rete.'; }
 }
+async function clearChat(){
+  const st=document.getElementById('send-status');
+  const isDm=(curMsgChannel==='dm');
+  if(isDm && !curDmPeer){ st.textContent='Nessuna conversazione selezionata.'; return; }
+  const active=document.querySelector('#msg-channels .tab.active');
+  const what = isDm ? ('la conversazione diretta con '+curDmPeer.name)
+                    : ('il canale '+(active?active.textContent:'selezionato'));
+  if(!confirm('Eliminare definitivamente i messaggi di '+what+'?\n\nVengono cancellati solo dal database della dashboard (il nodo e gli altri utenti non sono toccati), ma non si possono recuperare.')) return;
+  st.textContent='Cancellazione…';
+  try{
+    const r=await mcPost('/api/messages/clear', isDm?{peer:curDmPeer.id}:{channel:curMsgChannel});
+    if(r.error){ st.textContent='Errore: '+r.error; return; }
+    st.textContent='✓ Eliminati '+r.deleted+' messaggi.';
+    loadMessages(true); loadMeshStats(); if(isDm) loadDmPeers();
+  }catch(e){ st.textContent='Errore durante la cancellazione.'; }
+}
 async function loadRecords(){
   let r; try{ r = await (await apiFetch('/api/records')).json(); }catch(e){ return; }
   const el=document.getElementById('records'); if(!el) return;
@@ -1024,6 +1043,7 @@ function initTabs(){
     }
   });
   document.getElementById('send-btn').addEventListener('click', sendMessage);
+  document.getElementById('clear-chat').addEventListener('click', clearChat);
   document.getElementById('send-text').addEventListener('keydown', e=>{ if(e.key==='Enter') sendMessage(); });
   let searchTimer=null;
   document.getElementById('node-search').addEventListener('input', ()=>{

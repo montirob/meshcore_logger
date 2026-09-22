@@ -140,6 +140,33 @@ def messages():
     _resolve_paths(rows)
     return jsonify(rows)
 
+@app.route("/api/messages/clear", methods=["POST", "OPTIONS"])
+def messages_clear():
+    """Svuota una conversazione: `{channel}` per un canale, `{peer}` per i DM con un nodo."""
+    if request.method == "OPTIONS":
+        return ("", 204)
+    data = request.get_json(silent=True) or {}
+    peer = (data.get("peer") or "").strip()
+    channel = data.get("channel")
+    if not peer:
+        try:
+            channel = int(channel)
+        except (TypeError, ValueError):
+            return jsonify({"error": "indicare channel o peer"}), 400
+    con = sqlite3.connect(DB)
+    try:
+        con.execute("PRAGMA busy_timeout=8000")
+    except sqlite3.Error:
+        pass
+    if peer:
+        cur = con.execute("DELETE FROM messages WHERE channel=? AND (from_id=? OR to_id=?)",
+                          (DM_CHANNEL, peer, peer))
+    else:
+        cur = con.execute("DELETE FROM messages WHERE channel=?", (channel,))
+    deleted = cur.rowcount
+    con.commit(); con.close()
+    return jsonify({"deleted": deleted})
+
 @app.route("/api/dmpeers")
 def dmpeers():
     """Nodi con cui esiste una conversazione diretta (per le sotto-schede della chat)."""

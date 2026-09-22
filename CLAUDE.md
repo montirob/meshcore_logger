@@ -80,6 +80,7 @@ Tutti (tranne meshlogger) `enabled` → ripartono al boot. Token ngrok in `~/.co
 | `GET /api/records` | record assoluti/oggi + trend 1h |
 | `GET /api/messages?limit=N&channel=C` | messaggi (filtrabili per canale; `channel=-1` = DM, `peer=<node_id>` = conversazione diretta con un nodo) |
 | `POST /api/send` | invia `{text, channel, reply_id?}` → coda outbox |
+| `POST /api/messages/clear` | svuota una conversazione: `{channel}` (canale) o `{peer}` (DM con un nodo) → `{deleted}` |
 | `GET /api/dmpeers` | nodi con cui esiste una conversazione diretta (id, nome, ultimo ts, n. messaggi) |
 | `POST /api/dm` | invia `{node_id, text}` → coda outbox come messaggio diretto |
 | `GET /api/channels` | canali abilitati |
@@ -106,7 +107,8 @@ Per accesso via ngrok aggiungere header `ngrok-skip-browser-warning: true` (evit
 - **💬 Messaggi**: la **chat è il primo blocco della pagina** (statistiche mesh sotto). Chat
   **per canale** (sotto-tab Public/Italia/Veneto) più la sotto-tab **✉ Diretti** con una
   conversazione per nodo (chip dei nodi sopra la chat); ordine cronologico (recenti in basso),
-  input sotto la chat, clic sul nome mittente → **popup info nodo**.
+  input sotto la chat, clic sul nome mittente → **popup info nodo**. Tasto **🗑 Svuota chat**:
+  cancella dal DB i messaggi della sola conversazione aperta (canale o DM), previa conferma.
 - **🗺️ Mappa** (Leaflet + OSM): marker nodi, **filtri Tracciati/Con posizione/Tutti** (default
   "Tracciati"), **slider età** (1h→30gg), ricerca, flag **traccia**, percorsi, **auto-refresh 30s**.
 - **🛰️ Rete** (funzioni MeshCore): **Advertise** (manuale, con opz. flood) + **advertise automatico
