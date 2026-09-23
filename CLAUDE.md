@@ -195,8 +195,8 @@ La password viene tolta da `mc_commands.params` appena il comando è preso in ca
 comandi `password …`/`set guest.password …` sono mascherati anche nella risposta.
 **Coda veloce**: tra un ciclo di telemetria e l'altro `idle_until()` controlla ogni secondo
 `mc_commands`/`outbox` (prima si aspettava il ciclo successivo, fino a 60 s), sempre nello stesso task.
-**NB: la gestione ripetitori è stata provata solo con un nodo simulato**; formati reali da verificare
-(risposte `get` del tipo `"> valore"`, parametri CLI supportati dal firmware del ripetitore).
+Provato dal vivo (2026-09-23) solo owner/regioni/status; login e CLI verificati solo con nodo
+simulato: da confermare il formato delle risposte `get` (`"> valore"`) e i parametri del firmware.
 **Automazioni periodiche**: chiavi in `meta` lette con `get_meta_int()` + timer nel loop —
 `auto_advert_min` (advertise) e `auto_prune_days` (pulizia rubrica, al più una volta l'ora). **Per aggiungere una nuova automazione periodica**: (a) nuova chiave in `meta`,
 (b) nuovo ramo in `process_mc_commands` (se on-demand) o un timer nel loop (se periodico), (c) endpoint
@@ -253,17 +253,17 @@ Chiave API (in `meshweb.service`) · token ngrok (`~/.config/ngrok/ngrok.yml`) �
 **Fatto (su MeshCore):** telemetria (temp/umidità/pressione), canali (Public/Italia/Veneto),
 chat canali (ricezione+invio), **DM ai contatti** (ricezione+invio, tab ✉ Diretti e tasto ✉ nella
 tab Rete), mappa/nodi, **gestione della rubrica del nodo** (occupazione + pulizia manuale/automatica),
-**gestione remota di ripetitori/room** (solo in locale, da deployare).
+**gestione remota di ripetitori/room** (deployata il 2026-09-23).
 
 **Manutenzione fatta il 2026-09-22:** eliminate 247 letture corrotte da un guasto elettrico
 (226 con T fuori 10–50 °C + 21 con pressione fuori 900–1100 hPa; backup `meshlogger.db.bak-2026-09-22`
 sul Pi) e liberata la rubrica del nodo, piena a 350/350: rimossi 153 contatti inattivi da oltre
 14 giorni → 197, così i nodi nuovi tornano a registrarsi.
 
-**⚠️ PROSSIMO PASSO (2026-09-23): aggiornare il Pi.** La gestione remota dei ripetitori (pulsante
-⚙ Gestisci nella tab Rete) è fatta solo in locale (repo): il Pi era scollegato. Da copiare
-`logger_meshcore.py`, `web.py`, `templates/index.html`, poi `sudo systemctl restart meshcorelogger meshweb`
-e provare login/status/CLI su un ripetitore vero (vedi nota in §7).
+**Deploy 2026-09-23** della gestione ripetitori (backup dei file precedenti sul Pi in
+`/home/pi/meshlogger/bak-2026-09-23/`). Provato dal vivo su RPT_MONTE_PIAN (6 km, in flood):
+owner, regioni e **status rispondono in ~3 s anche senza login**. Login e comandi CLI (`get`/`set`)
+restano da provare con una password di un ripetitore.
 
 **Possibili prossimi passi:** batteria/SNR/env per nodo sulla mappa; notifica/badge sui DM non letti;
 attivare la pulizia rubrica automatica (`auto_prune_days`) per non tornare a rubrica piena.
