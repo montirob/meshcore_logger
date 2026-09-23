@@ -33,6 +33,8 @@ INTERVAL = int(os.environ.get("MESH_INTERVAL", "60"))
 NUM_CHANNELS = int(os.environ.get("MC_NUM_CHANNELS", "8"))
 NODES_REFRESH = int(os.environ.get("MC_NODES_REFRESH", "300"))
 DM_CHANNEL = -1   # canale convenzionale dei messaggi diretti nella tabella `messages`
+TXT_CLI_DATA = 1  # txt_type delle risposte ai comandi CLI inviati a ripetitori/room
+RPT_TIMEOUT = int(os.environ.get("MC_RPT_TIMEOUT", "45"))   # s max per una richiesta di gestione remota (multi-hop)
 # Range fisici del sensore: fuori da questi valori la lettura è un guasto (es. picchi
 # elettrici) e va scartata, non salvata.
 LIMITS = {"temperature": (-40.0, 85.0), "humidity": (0.0, 100.0), "pressure": (300.0, 1100.0)}
@@ -299,6 +301,8 @@ def on_contact_msg(ev):
         pl = getattr(ev, "payload", None) or {}
         if not isinstance(pl, dict):
             return
+        if pl.get("txt_type") == TXT_CLI_DATA:
+            return   # risposta a un comando CLI di gestione: la raccoglie rpt_action, non è un DM
         nid = (pl.get("pubkey_prefix") or "")[:12]
         text = pl.get("text", "") or ""
         ts = int(pl.get("sender_timestamp") or time.time())
@@ -400,6 +404,145 @@ async def dump_nodes_mc(mc, con):
     except Exception as e:
         log("dump_nodes err:", e)
 
+# ---------------- Gestione remota di ripetitori / room ----------------
+# Il companion inoltra le richieste al nodo remoto via mesh. Serve prima un login
+# (password admin o guest) con send_login: il ripetitore ricorda la sessione per un
+# po', poi le richieste binarie (status, telemetria, vicini, ACL) e i comandi CLI
+# (`get`/`set`, `reboot`, `clock sync`, …) vengono accettati. Owner e regioni sono
+# richieste anonime: funzionano anche senza login.
+RPT_OPS = ("login", "logout", "status", "telemetry", "neighbours", "acl", "owner", "regions", "cli")
+_SENSITIVE_CLI = ("password ", "set guest.password")
+
+def _redact(params):
+    """Copia dei parametri senza segreti (password di login o nei comandi CLI)."""
+    p = dict(params or {})
+    if "password" in p:
+        p["password"] = "***"
+    cmd = str(p.get("cmd") or "")
+    for s in _SENSITIVE_CLI:
+        if cmd.lower().startswith(s):
+            p["cmd"] = cmd[:len(s)] + "***"
+    return p
+
+def _suggested_wait(sent_payload, floor=10):
+    """Attesa della risposta dalla mesh: la stima del firmware (ms), con margine."""
+    st = (sent_payload or {}).get("suggested_timeout") if isinstance(sent_payload, dict) else None
+    t = (st / 800.0) if st else 20
+    return max(floor, min(RPT_TIMEOUT, t))
+
+async def _send_and_wait(mc, send, event_types, match, floor=10):
+    """Invia una richiesta e attende il primo evento (tra `event_types`) per cui
+    `match(payload)` è vero. Mi iscrivo PRIMA di inviare per non perdere risposte
+    rapide. Ritorna l'evento o None se il nodo remoto non risponde."""
+    fut = asyncio.get_running_loop().create_future()
+    def cb(ev):
+        pl = getattr(ev, "payload", None) or {}
+        if not fut.done() and isinstance(pl, dict) and match(pl):
+            fut.set_result(ev)
+    subs = [mc.subscribe(t, cb) for t in event_types]
+    try:
+        sent = await asyncio.wait_for(_maybe(send()), CALL_TIMEOUT)
+        if sent is None or _is_err(sent):
+            reason = (getattr(sent, "payload", None) or {}) if sent is not None else {}
+            raise RuntimeError("il nodo locale non ha inviato la richiesta: " + str(reason.get("reason") or reason or "?"))
+        try:
+            return await asyncio.wait_for(fut, _suggested_wait(getattr(sent, "payload", None), floor))
+        except asyncio.TimeoutError:
+            return None
+    finally:
+        for s in subs:
+            try: s.unsubscribe()
+            except Exception: pass
+
+def _contact_names(mc):
+    """[(public_key hex minuscolo, nome)] dei contatti noti: per dare un nome ai
+    prefissi di chiave restituiti da vicini/ACL."""
+    cs = getattr(mc, "contacts", None) or {}
+    out = []
+    for k, v in (cs.items() if isinstance(cs, dict) else []):
+        if isinstance(v, dict):
+            out.append(((v.get("public_key") or str(k)).lower(), v.get("adv_name")))
+    return out
+
+def _name_for(names, prefix):
+    prefix = (prefix or "").lower()
+    hits = [n for pk, n in names if prefix and pk.startswith(prefix)]
+    return hits[0] if len(hits) == 1 else None
+
+NO_REPLY = "nessuna risposta (nodo fuori portata o sessione scaduta: rifai il login)"
+
+async def rpt_action(mc, params):
+    """Esegue un'operazione di gestione remota su un ripetitore/room.
+    params: {node_id, op, password? (login), cmd? (cli)}. Ritorna {op, ok, info, data}."""
+    op = params.get("op")
+    if op not in RPT_OPS:
+        raise RuntimeError("operazione sconosciuta: " + str(op))
+    contact = mc.get_contact_by_key_prefix(params.get("node_id") or "")
+    if not contact:
+        raise RuntimeError("contatto non trovato nella rubrica del nodo")
+    prefix = (contact.get("public_key") or "")[:12].lower()
+    same_node = lambda pl: (pl.get("pubkey_prefix") or prefix).lower().startswith(prefix)
+
+    if op == "login":
+        pwd = str(params.get("password") or "")
+        cmds = mc.commands
+        send = (lambda: cmds._send_login_raw(contact, pwd)) if hasattr(cmds, "_send_login_raw") \
+            else (lambda: cmds.send_login(contact, pwd))
+        ev = await _send_and_wait(mc, send, [EventType.LOGIN_SUCCESS, EventType.LOGIN_FAILED], same_node, floor=15)
+        if ev is None:
+            return {"op": op, "ok": False, "info": "nessuna risposta al login (nodo fuori portata?)"}
+        if ev.type == EventType.LOGIN_FAILED:
+            return {"op": op, "ok": False, "info": "password errata"}
+        pl = ev.payload or {}
+        return {"op": op, "ok": True, "info": "accesso " + ("amministratore" if pl.get("is_admin") else "ospite"),
+                "data": {k: pl.get(k) for k in ("is_admin", "permissions", "acl_permissions", "server_timestamp", "fw_ver_level")}}
+
+    if op == "logout":
+        await asyncio.wait_for(_maybe(mc.commands.send_logout(contact)), CALL_TIMEOUT)
+        return {"op": op, "ok": True, "info": "disconnesso"}
+
+    if op == "cli":
+        cmd = str(params.get("cmd") or "").strip()
+        if not cmd:
+            raise RuntimeError("comando vuoto")
+        ev = await _send_and_wait(mc, lambda: mc.commands.send_cmd(contact, cmd),
+                                  [EventType.CONTACT_MSG_RECV],
+                                  lambda pl: pl.get("txt_type") == TXT_CLI_DATA and same_node(pl), floor=15)
+        shown = _redact({"cmd": cmd})["cmd"]
+        if ev is None:
+            return {"op": op, "ok": False, "info": NO_REPLY, "data": {"cmd": shown}}
+        reply = (ev.payload or {}).get("text", "")
+        if shown != cmd:   # il firmware ripete la nuova password nella risposta
+            secret = cmd.split(None, 2)[-1] if cmd.lower().startswith("set ") else cmd.split(None, 1)[-1]
+            reply = reply.replace(secret, "***")
+        return {"op": op, "ok": True, "info": "risposta ricevuta", "data": {"cmd": shown, "reply": reply}}
+
+    # richieste binarie/anonime: la libreria attende già la risposta (…_sync)
+    c = mc.commands
+    call = {"status":     lambda: c.req_status_sync(contact),
+            "telemetry":  lambda: c.req_telemetry_sync(contact),
+            "neighbours": lambda: c.fetch_all_neighbours(contact),
+            "acl":        lambda: c.req_acl_sync(contact),
+            "owner":      lambda: c.req_owner_sync(contact),
+            "regions":    lambda: c.req_regions_sync(contact)}[op]
+    try:
+        data = await asyncio.wait_for(_maybe(call()), RPT_TIMEOUT)
+    except asyncio.TimeoutError:
+        data = None
+    if data is None:
+        return {"op": op, "ok": False, "info": NO_REPLY}
+    names = _contact_names(mc)
+    if op == "telemetry":
+        data = _lpp_items(data)
+    elif op == "neighbours":
+        data = {"total": data.get("neighbours_count"),
+                "items": [dict(n, name=_name_for(names, n.get("pubkey"))) for n in (data.get("neighbours") or [])]}
+    elif op == "acl":
+        data = [dict(a, name=_name_for(names, a.get("key"))) for a in (data or [])]
+    elif op == "status":
+        data = {k: v for k, v in data.items() if k != "tag"}
+    return {"op": op, "ok": True, "info": "ok", "data": data}
+
 async def process_mc_commands(mc, con):
     """Esegue i comandi MeshCore accodati dal web (advert, ping) e riscrive il risultato.
     Estensibile: nuove azioni = nuovi rami qui + endpoint web."""
@@ -465,10 +608,15 @@ async def process_mc_commands(mc, con):
                            "info": ("percorso trovato" if reachable else "nessuna risposta")}
             elif action == "prune":
                 res = await prune_contacts(mc, con, int(params.get("days") or 0))
+            elif action == "rpt":
+                # la password non deve restare nel DB: la tolgo prima di usarla
+                con.execute("UPDATE mc_commands SET params=? WHERE id=?", (json.dumps(_redact(params)), cid))
+                con.commit()
+                res = await rpt_action(mc, params)
             else:
                 raise RuntimeError("azione sconosciuta: " + str(action))
             con.execute("UPDATE mc_commands SET status='done', result=?, done_ts=? WHERE id=?",
-                        (json.dumps(res), int(time.time()), cid))
+                        (json.dumps(res, default=str), int(time.time()), cid))
             con.commit()
             log(f"CMD #{cid} {action} -> {res}")
         except Exception as e:
@@ -608,6 +756,29 @@ async def get_telemetry(mc):
     log("nessun canale ambientale nella risposta; ultimo payload:", repr(last_payload)[:250])
     return {}
 
+def _has_pending(con):
+    try:
+        return bool(con.execute("SELECT 1 FROM mc_commands WHERE status='pending' LIMIT 1").fetchone()
+                    or con.execute("SELECT 1 FROM outbox WHERE status='pending' LIMIT 1").fetchone())
+    except Exception:
+        return False
+
+async def idle_until(mc, con, myname, deadline):
+    """Attesa fino al prossimo ciclo di telemetria, ma controllando ogni secondo la
+    coda comandi/outbox: la gestione remota dei ripetitori e l'invio dei messaggi
+    rispondono in pochi secondi invece di aspettare il ciclo successivo (fino a 60s).
+    Tutto resta nello stesso task: un solo interlocutore sulla connessione al nodo."""
+    await asyncio.sleep(1)
+    while time.time() < deadline:
+        if mc is not None and getattr(mc, "is_connected", False) and _has_pending(con):
+            try:
+                await process_outbox(mc, con, myname)
+                await process_mc_commands(mc, con)
+            except Exception as e:
+                log("coda comandi err:", e)
+            _progress()
+        await asyncio.sleep(1)
+
 async def main():
     con = init_db()
     log(f"logger MeshCore avviato: conn={CONN} sensor={SENSOR} interval={INTERVAL}s")
@@ -698,7 +869,7 @@ async def main():
                 pass
             mc = None
             await asyncio.sleep(5)
-        await asyncio.sleep(max(1, INTERVAL - (time.time() - cycle)))
+        await idle_until(mc, con, myname, cycle + INTERVAL)
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -500,6 +500,23 @@ def mc_ping():
     cid = _enqueue("ping", {"node_id": nid})
     return jsonify({"queued": True, "id": cid})
 
+def _hide_secrets(row):
+    """Non restituisce mai la password di un login ancora in coda (il logger la
+    cancella dal DB appena prende in carico il comando)."""
+    if row.get("action") == "rpt" and row.get("params"):
+        try:
+            p = json.loads(row["params"])
+            if "password" in p:
+                p["password"] = "***"
+            cmd = str(p.get("cmd") or "")
+            for s in ("password ", "set guest.password"):
+                if cmd.lower().startswith(s):
+                    p["cmd"] = cmd[:len(s)] + "***"
+            row["params"] = json.dumps(p)
+        except (TypeError, ValueError):
+            row["params"] = None
+    return row
+
 @app.route("/api/mc/commands")
 def mc_commands_list():
     limit = request.args.get("limit", default=20, type=int)
@@ -508,7 +525,51 @@ def mc_commands_list():
         rows = q("SELECT id,ts,action,params,status,result,error,done_ts FROM mc_commands ORDER BY id DESC LIMIT ?", (limit,))
     except Exception:
         rows = []
-    return jsonify(rows)
+    return jsonify([_hide_secrets(r) for r in rows])
+
+@app.route("/api/mc/cmd")
+def mc_command_one():
+    """Stato di un singolo comando in coda (polling dalla pagina di gestione)."""
+    cid = request.args.get("id", type=int)
+    if not cid:
+        return jsonify({"error": "id mancante"}), 400
+    rows = q("SELECT id,ts,action,params,status,result,error,done_ts FROM mc_commands WHERE id=?", (cid,))
+    if not rows:
+        return jsonify({"error": "non trovato"}), 404
+    return jsonify(_hide_secrets(rows[0]))
+
+RPT_OPS = ("login", "logout", "status", "telemetry", "neighbours", "acl", "owner", "regions", "cli")
+
+@app.route("/api/mc/rpt", methods=["POST", "OPTIONS"])
+def mc_rpt():
+    """Gestione remota di un ripetitore/room: `{node_id, op, password?, cmd?}`.
+    op: login (con password) · logout · status · telemetry · neighbours · acl ·
+    owner · regions · cli (con `cmd`, es. "get name", "clock sync", "reboot")."""
+    if request.method == "OPTIONS":
+        return ("", 204)
+    data = request.get_json(silent=True) or {}
+    node_id = (data.get("node_id") or "").strip()
+    op = data.get("op")
+    if not node_id:
+        return jsonify({"error": "node_id mancante"}), 400
+    if op not in RPT_OPS:
+        return jsonify({"error": "operazione non valida"}), 400
+    params = {"node_id": node_id, "op": op}
+    if op == "login":
+        pwd = data.get("password")
+        if pwd is None:
+            return jsonify({"error": "password mancante"}), 400
+        if len(str(pwd).encode("utf-8")) > 15:
+            return jsonify({"error": "password troppo lunga (max 15 caratteri)"}), 400
+        params["password"] = str(pwd)
+    if op == "cli":
+        cmd = (data.get("cmd") or "").strip()
+        if not cmd:
+            return jsonify({"error": "comando vuoto"}), 400
+        if len(cmd.encode("utf-8")) > 150:
+            return jsonify({"error": "comando troppo lungo"}), 400
+        params["cmd"] = cmd
+    return jsonify({"queued": True, "id": _enqueue("rpt", params)})
 
 @app.route("/api/mc/prune", methods=["POST", "OPTIONS"])
 def mc_prune():

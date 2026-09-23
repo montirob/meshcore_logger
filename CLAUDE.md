@@ -93,6 +93,8 @@ Tutti (tranne meshlogger) `enabled` → ripartono al boot. Token ngrok in `~/.co
 | `POST /api/mc/ping` | `{node_id}` → accoda un ping (path discovery) al nodo |
 | `GET /api/mc/commands?limit=N` | esito comandi MeshCore (coda) |
 | `POST /api/mc/prune` | `{days}` → accoda la pulizia della rubrica del nodo (rimuove i contatti non visti da N giorni) |
+| `POST /api/mc/rpt` | gestione remota ripetitore/room: `{node_id, op, password?, cmd?}`, op = `login`(password) · `logout` · `status` · `telemetry` · `neighbours` · `acl` · `owner` · `regions` · `cli`(cmd) → `{queued, id}` |
+| `GET /api/mc/cmd?id=N` | esito di un singolo comando in coda (polling); le password non vengono mai restituite |
 | `GET\|POST /api/mc/config` | legge/imposta `{auto_advert_min, auto_prune_days}`; in lettura riporta anche `contacts_count`/`max_contacts` |
 
 Per accesso via ngrok aggiungere header `ngrok-skip-browser-warning: true` (evita l'interstitial free).
@@ -116,6 +118,13 @@ Per accesso via ngrok aggiungere header `ngrok-skip-browser-warning: true` (evit
   visti da N giorni (manuale o automatica ogni ora); tabella **nodi** con badge tipo
   (Client/Ripetitore/Room/Sensore), filtro per tipo, ricerca, **Ping** per riga (path discovery →
   raggiungibile+tempo o "nessuna risposta") e **✉** per aprire un messaggio diretto; log azioni.
+  Su ripetitori e room c'è **⚙ Gestisci**: chiede la password (popup) e apre la **pagina di gestione**
+  (`#tab-rpt`): stato (batteria, uptime, rumore, RSSI/SNR, contatori pacchetti, airtime), telemetria,
+  vicini diretti con SNR, ACL, proprietario/regioni (anonime), azioni rapide (advert, orologio/sync,
+  versione, stats, azzera stats, riavvio, cambio password admin), tabella impostazioni `get`/`set`
+  (nome, repeat, lat/lon, tx, radio, advert.interval, flood.advert.interval, flood.max, af, delay,
+  owner.info, guest.password) e **console CLI** libera. La password resta solo in memoria nella pagina
+  (serve per il tasto "Login" di rinnovo sessione); le operazioni partono in fila, una alla volta.
 - Tema chiaro/scuro; chiave API salvata in localStorage (tasto 🔑).
 
 ---
@@ -176,6 +185,18 @@ Azioni attuali: `advert` (`send_advert(flood)`), `prune` (pulizia rubrica), `pin
 - **ripetitore/room (type 2/3)**: `send_path_discovery_sync(contact, 25s)` (silenzioso).
 Fatto empirico: i companion NON rispondono al path discovery (KDNZ, in portata, → nessuna risposta);
 rispondono invece all'ACK del DM (KDNZ ~0.9s). SQLite in **WAL + busy_timeout=8000** per evitare lock.
+**Gestione remota ripetitori/room** (azione `rpt`, funzione `rpt_action`): login con
+`_send_login_raw` + attesa `LOGIN_SUCCESS`/`LOGIN_FAILED` (la `send_login_sync` della libreria non
+vede il fallimento e aspetta fino al timeout); status/telemetria/vicini/ACL con i `req_*_sync` della
+libreria (richiedono login); owner/regioni sono richieste **anonime**; i comandi CLI vanno con
+`send_cmd` e la risposta arriva come `CONTACT_MSG_RECV` con **`txt_type=1`** (CLI_DATA) dal prefisso
+del ripetitore — `on_contact_msg` le **scarta** perché non sono DM. Timeout `MC_RPT_TIMEOUT` (45 s).
+La password viene tolta da `mc_commands.params` appena il comando è preso in carico (`_redact`), e i
+comandi `password …`/`set guest.password …` sono mascherati anche nella risposta.
+**Coda veloce**: tra un ciclo di telemetria e l'altro `idle_until()` controlla ogni secondo
+`mc_commands`/`outbox` (prima si aspettava il ciclo successivo, fino a 60 s), sempre nello stesso task.
+**NB: la gestione ripetitori è stata provata solo con un nodo simulato**; formati reali da verificare
+(risposte `get` del tipo `"> valore"`, parametri CLI supportati dal firmware del ripetitore).
 **Automazioni periodiche**: chiavi in `meta` lette con `get_meta_int()` + timer nel loop —
 `auto_advert_min` (advertise) e `auto_prune_days` (pulizia rubrica, al più una volta l'ora). **Per aggiungere una nuova automazione periodica**: (a) nuova chiave in `meta`,
 (b) nuovo ramo in `process_mc_commands` (se on-demand) o un timer nel loop (se periodico), (c) endpoint
@@ -231,12 +252,18 @@ Chiave API (in `meshweb.service`) · token ngrok (`~/.config/ngrok/ngrok.yml`) �
 
 **Fatto (su MeshCore):** telemetria (temp/umidità/pressione), canali (Public/Italia/Veneto),
 chat canali (ricezione+invio), **DM ai contatti** (ricezione+invio, tab ✉ Diretti e tasto ✉ nella
-tab Rete), mappa/nodi, **gestione della rubrica del nodo** (occupazione + pulizia manuale/automatica).
+tab Rete), mappa/nodi, **gestione della rubrica del nodo** (occupazione + pulizia manuale/automatica),
+**gestione remota di ripetitori/room** (solo in locale, da deployare).
 
 **Manutenzione fatta il 2026-09-22:** eliminate 247 letture corrotte da un guasto elettrico
 (226 con T fuori 10–50 °C + 21 con pressione fuori 900–1100 hPa; backup `meshlogger.db.bak-2026-09-22`
 sul Pi) e liberata la rubrica del nodo, piena a 350/350: rimossi 153 contatti inattivi da oltre
 14 giorni → 197, così i nodi nuovi tornano a registrarsi.
+
+**⚠️ PROSSIMO PASSO (2026-09-23): aggiornare il Pi.** La gestione remota dei ripetitori (pulsante
+⚙ Gestisci nella tab Rete) è fatta solo in locale (repo): il Pi era scollegato. Da copiare
+`logger_meshcore.py`, `web.py`, `templates/index.html`, poi `sudo systemctl restart meshcorelogger meshweb`
+e provare login/status/CLI su un ripetitore vero (vedi nota in §7).
 
 **Possibili prossimi passi:** batteria/SNR/env per nodo sulla mappa; notifica/badge sui DM non letti;
 attivare la pulizia rubrica automatica (`auto_prune_days`) per non tornare a rubrica piena.

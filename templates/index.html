@@ -151,6 +151,27 @@
   .tabs{flex-wrap:wrap}
   #dm-peers .empty{padding:4px 0}
   .pingres{font-size:11px;color:var(--muted);margin-left:6px}
+  .mgmtbtn{font-size:12px;padding:3px 8px;margin-left:4px}
+  .rpt-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px}
+  .rpt-head .rpt-name{flex:1;min-width:160px}
+  .rpt-head h2{font-size:18px;margin:0;font-weight:650}
+  .rpt-head .sub{margin:2px 0 0}
+  .b-admin{background:color-mix(in srgb,var(--pres) 22%,transparent);color:var(--pres)}
+  .b-guest{background:color-mix(in srgb,var(--temp) 22%,transparent);color:var(--temp)}
+  .b-off{background:color-mix(in srgb,var(--muted) 22%,transparent);color:var(--ink2)}
+  .card h2 .btn{margin-left:auto;font-size:12px;padding:3px 8px}
+  .kv{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:2px 16px}
+  .kv .nm-row{padding:5px 0}
+  .actions{display:flex;flex-wrap:wrap;gap:6px}
+  .btn.danger{color:var(--temp);border-color:color-mix(in srgb,var(--temp) 45%,transparent)}
+  .btn:disabled{opacity:.5;cursor:progress}
+  .rpt-set td{vertical-align:middle}
+  .rpt-set input.inp{width:100%;min-width:120px;padding:4px 8px;font-size:13px}
+  .rpt-set .btn{font-size:12px;padding:3px 8px}
+  .console{background:var(--plane);border:1px solid var(--border);border-radius:8px;padding:8px 10px;
+      font:12px/1.5 ui-monospace,Consolas,monospace;height:220px;overflow:auto;white-space:pre-wrap;word-break:break-word;margin:0 0 8px}
+  .console .c-cmd{color:var(--hum)} .console .c-err{color:var(--temp)} .console .c-info{color:var(--muted)}
+  .hint{font-size:12px;color:var(--muted)}
 </style>
 </head>
 <body>
@@ -311,7 +332,103 @@
     </div>
   </section>
 
+  <section id="tab-rpt" hidden>
+    <div class="rpt-head">
+      <button class="btn" id="rpt-back">← Rete</button>
+      <div class="rpt-name">
+        <h2 id="rpt-title">Ripetitore</h2>
+        <div class="sub" id="rpt-sub"></div>
+      </div>
+      <span class="badge b-off" id="rpt-session">non connesso</span>
+      <button class="btn" id="rpt-relogin" title="Rifai il login (la sessione sul ripetitore scade dopo un po' di inattività)">🔑 Login</button>
+      <button class="btn" id="rpt-logout">Esci</button>
+    </div>
+    <div class="sendstatus" id="rpt-status-line"></div>
+
+    <div class="grid2">
+      <div class="card">
+        <h2>📊 Stato <button class="btn" data-rpt-op="status">Aggiorna</button></h2>
+        <div id="rpt-status" class="kv"><div class="empty">—</div></div>
+      </div>
+      <div class="card">
+        <h2>🌡️ Telemetria <button class="btn" data-rpt-op="telemetry">Aggiorna</button></h2>
+        <div id="rpt-telemetry" class="ranklist"><div class="empty">—</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>⚡ Azioni</h2>
+      <div class="actions">
+        <button class="btn" data-cli="advert">📢 Advert</button>
+        <button class="btn" data-cli="clock">🕒 Leggi orologio</button>
+        <button class="btn" data-cli="clock sync">⏱ Sincronizza orologio</button>
+        <button class="btn" data-cli="ver">ℹ️ Versione firmware</button>
+        <button class="btn" data-cli="stats-core">📈 Stats core</button>
+        <button class="btn" data-cli="stats-radio">📡 Stats radio</button>
+        <button class="btn" data-cli="stats-packets">📦 Stats pacchetti</button>
+        <button class="btn" data-cli="clear stats" data-confirm="Azzerare i contatori statistici del ripetitore?">🧹 Azzera statistiche</button>
+        <button class="btn danger" data-cli="reboot" data-confirm="Riavviare il ripetitore? Resterà irraggiungibile per qualche secondo e andrà rifatto il login.">🔁 Riavvia</button>
+        <button class="btn danger" id="rpt-chpwd">🔒 Cambia password admin</button>
+      </div>
+      <div class="hint" style="margin-top:8px">Le risposte compaiono nella console qui sotto. Azioni e impostazioni richiedono il login come <b>amministratore</b>.</div>
+    </div>
+
+    <div class="card">
+      <h2>🛰️ Vicini diretti <button class="btn" data-rpt-op="neighbours">Aggiorna</button></h2>
+      <div class="tablewrap" style="margin-bottom:6px">
+        <table class="stats" style="min-width:360px">
+          <thead><tr><th>Nodo</th><th>Sentito</th><th>SNR</th></tr></thead>
+          <tbody id="rpt-neigh"><tr><td colspan="3" style="text-align:center;color:var(--muted)">—</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>⚙️ Impostazioni <button class="btn" id="rpt-readall">Leggi tutte</button></h2>
+      <div class="tablewrap" style="margin-bottom:6px">
+        <table class="stats rpt-set" style="min-width:480px">
+          <thead><tr><th>Parametro</th><th>Valore</th><th></th></tr></thead>
+          <tbody id="rpt-settings"></tbody>
+        </table>
+      </div>
+      <div class="hint">"Leggi" esegue <code>get &lt;parametro&gt;</code>, "Imposta" esegue <code>set &lt;parametro&gt; &lt;valore&gt;</code>. Ogni lettura è un giro sulla mesh: "Leggi tutte" può richiedere un minuto.</div>
+    </div>
+
+    <div class="grid2">
+      <div class="card">
+        <h2>👥 Accessi (ACL) <button class="btn" data-rpt-op="acl">Aggiorna</button></h2>
+        <div id="rpt-acl" class="ranklist"><div class="empty">—</div></div>
+      </div>
+      <div class="card">
+        <h2>🏷️ Proprietario e regioni <button class="btn" id="rpt-anon">Aggiorna</button></h2>
+        <div id="rpt-owner" class="ranklist"><div class="empty">—</div></div>
+        <div class="hint" style="margin-top:6px">Richieste anonime: rispondono anche senza login (se il firmware le supporta).</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>⌨️ Console CLI <button class="btn" id="rpt-console-clear">Pulisci</button></h2>
+      <div class="console" id="rpt-console"></div>
+      <div class="sendrow">
+        <input id="rpt-cli" class="inp" style="flex:1;min-width:180px" maxlength="150" placeholder="Comando, es. get radio · neighbors · set tx 20">
+        <button class="btn primary" id="rpt-cli-send">Invia</button>
+      </div>
+    </div>
+  </section>
+
   <div class="foot" id="foot"></div>
+</div>
+
+<div id="rpt-login-modal" class="modal" hidden>
+  <div class="modal-card">
+    <div class="modal-head"><span id="rl-title">Accesso al ripetitore</span><span class="modal-x" id="rl-x" title="Chiudi">✕</span></div>
+    <div class="hint" id="rl-hint" style="margin-bottom:8px"></div>
+    <form id="rl-form" autocomplete="off">
+      <input id="rl-pwd" class="inp" type="password" maxlength="15" placeholder="Password" style="width:100%" autocomplete="off">
+      <button class="btn primary" type="submit" id="rl-go">Accedi</button>
+    </form>
+    <div class="sendstatus" id="rl-status"></div>
+  </div>
 </div>
 
 <div id="node-modal" class="modal" hidden>
@@ -583,7 +700,7 @@ function openDm(node_id, name){
   curMsgChannel='dm'; curDmPeer={id:node_id, name:name||node_id};
   document.querySelectorAll('#tabs .tab').forEach(x=>x.classList.remove('active'));
   const mt=document.querySelector('#tabs .tab[data-tab="messages"]'); if(mt) mt.classList.add('active');
-  ['charts','messages','map','net'].forEach(t=>{ document.getElementById('tab-'+t).hidden = (t!=='messages'); });
+  ['charts','messages','map','net','rpt'].forEach(t=>{ document.getElementById('tab-'+t).hidden = (t!=='messages'); });
   document.getElementById('dm-peers').hidden=false;
   loadChannels().then(()=>loadDmPeers()).then(()=>{ loadMessages(true); document.getElementById('send-text').focus(); });
   loadMeshStats();
@@ -712,6 +829,8 @@ function showNodeOnMap(id){
   const mt=document.querySelector('.tab[data-tab="map"]'); if(mt) mt.classList.add('active');
   document.getElementById('tab-charts').hidden=true;
   document.getElementById('tab-messages').hidden=true;
+  document.getElementById('tab-net').hidden=true;
+  document.getElementById('tab-rpt').hidden=true;
   document.getElementById('tab-map').hidden=false;
   document.querySelectorAll('#map-filter .btn').forEach(x=>x.classList.remove('active'));
   const ab=document.querySelector('#map-filter .btn[data-f="all"]'); if(ab) ab.classList.add('active');
@@ -734,6 +853,7 @@ async function showRoute(m){
   document.getElementById('tab-charts').hidden=true;
   document.getElementById('tab-messages').hidden=true;
   document.getElementById('tab-net').hidden=true;
+  document.getElementById('tab-rpt').hidden=true;
   document.getElementById('tab-map').hidden=false;
   ensureMap(); clearRoute();
   const pts=[];
@@ -953,6 +1073,11 @@ async function loadCmdLog(){
     else if(c.action==='prune'&&r) desc = 'rimossi '+r.removed+', in rubrica '+r.remaining;
     else if(c.action==='advert'&&c.status==='done') desc='inviato';
     else if(c.error) desc='errore: '+c.error;
+    if(c.action==='rpt'){
+      let p={}; try{ p=c.params?JSON.parse(c.params):{}; }catch(e){}
+      c.action='🛠 '+(p.op==='cli'?('«'+(p.cmd||'')+'»'):(RPT_OP_LBL[p.op]||p.op||''));
+      if(r) desc=(r.ok?'✓ ':'✗ ')+(r.info||'');
+    }
     const LBL={advert:'📢 Advertise', ping:'📡 Ping', prune:'🧹 Pulizia rubrica'};
     const d=document.createElement('div'); d.className='rank';
     d.innerHTML='<span class="rn"></span><span class="rv"></span>';
@@ -980,6 +1105,7 @@ async function loadNetNodes(){
                  '<td>'+(nd.hops!=null?nd.hops:'')+'</td>'+
                  '<td><button class="btn pingbtn">Ping</button>'+
                  ((role==='Chat'||role==='Room')?'<button class="btn dmbtn" title="Invia un messaggio diretto">✉</button>':'')+
+                 ((role==='Repeater'||role==='Room')?'<button class="btn mgmtbtn" title="Gestione remota (richiede la password)">⚙ Gestisci</button>':'')+
                  '<span class="pingres"></span></td>';
     const nameTd=tr.querySelector('td'); nameTd.textContent=nd.long_name||nd.node_id;
     nameTd.style.cursor='pointer'; nameTd.title='Info nodo';
@@ -988,6 +1114,8 @@ async function loadNetNodes(){
     btn.addEventListener('click',()=>doPing(nd.node_id, role, btn, tr.querySelector('.pingres')));
     const dmb=tr.querySelector('.dmbtn');
     if(dmb) dmb.addEventListener('click',()=>openDm(nd.node_id, nd.long_name||nd.node_id));
+    const mgb=tr.querySelector('.mgmtbtn');
+    if(mgb) mgb.addEventListener('click',()=>openRptLogin(nd));
     tb.appendChild(tr);
   });
   if(!tb.children.length) tb.innerHTML='<tr><td colspan="5" style="text-align:center;color:var(--muted)">Nessun nodo</td></tr>';
@@ -1016,6 +1144,313 @@ async function doPing(node_id, role, btn, resEl){
   };
   setTimeout(poll,2500);
 }
+// ---------------- Gestione remota ripetitori / room ----------------
+// Ogni operazione passa dalla coda comandi (/api/mc/rpt): il logger, che tiene
+// l'unica connessione al nodo, la inoltra via mesh e scrive l'esito, che qui si
+// legge con /api/mc/cmd. La password resta solo in memoria in questa pagina.
+const RPT_OP_LBL={login:'Login', logout:'Logout', status:'Stato', telemetry:'Telemetria',
+  neighbours:'Vicini', acl:'Accessi', owner:'Proprietario', regions:'Regioni'};
+const RPT_SETTINGS=[
+  {k:'name', l:'Nome'},
+  {k:'repeat', l:'Ripetizione (on/off)'},
+  {k:'lat', l:'Latitudine'},
+  {k:'lon', l:'Longitudine'},
+  {k:'tx', l:'Potenza TX (dBm)'},
+  {k:'radio', l:'Radio (freq,bw,sf,cr)', warn:'Con parametri radio diversi dal resto della rete il ripetitore diventa irraggiungibile. La modifica si applica dopo un riavvio.'},
+  {k:'advert.interval', l:'Advert locale ogni (min)'},
+  {k:'flood.advert.interval', l:'Advert flood ogni (ore)'},
+  {k:'flood.max', l:'Max salti flood'},
+  {k:'af', l:'Airtime factor'},
+  {k:'rxdelay', l:'RX delay base'},
+  {k:'txdelay', l:'TX delay (flood)'},
+  {k:'direct.txdelay', l:'TX delay (diretti)'},
+  {k:'owner.info', l:'Info proprietario'},
+  {k:'guest.password', l:'Password ospite', secret:true},
+];
+const ACL_ROLE={0:'ospite', 1:'sola lettura', 2:'lettura/scrittura', 3:'amministratore'};
+let rpt=null;              // {id,name,role,hops,last_heard,session:null|'admin'|'guest',pwd}
+let rptLoginMode='login';  // 'login' | 'chpwd'
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+
+// Una operazione alla volta: il logger le esegue comunque in sequenza, e così la
+// console mostra ogni comando seguito dalla sua risposta.
+let rptQueue=Promise.resolve();
+function rptRun(op, extra, onStart){
+  const p=rptQueue.then(()=>{ if(onStart) onStart(); return rptRunNow(op, extra); });
+  rptQueue=p.catch(()=>{});
+  return p;
+}
+async function rptRunNow(op, extra){
+  const r=await mcPost('/api/mc/rpt', Object.assign({node_id:rpt.id, op}, extra||{}));
+  if(r.error) throw new Error(r.error);
+  const t0=Date.now();
+  while(Date.now()-t0<120000){
+    await sleep(1500);
+    let c; try{ c=await (await apiFetch('/api/mc/cmd?id='+r.id)).json(); }catch(e){ continue; }
+    if(!c || c.status==='pending') continue;
+    if(c.status==='error') throw new Error(c.error||'errore');
+    try{ return JSON.parse(c.result||'{}'); }catch(e){ return {}; }
+  }
+  throw new Error('nessun esito dopo 2 minuti: il logger è in esecuzione e collegato al nodo?');
+}
+function openRptLogin(nd){
+  rpt={id:nd.node_id, name:nd.long_name||nd.node_id, role:nd.role, hops:nd.hops,
+       last_heard:nd.last_heard, session:null, pwd:null};
+  showRptLogin('login');
+}
+function showRptLogin(mode){
+  rptLoginMode=mode;
+  const chpwd=(mode==='chpwd');
+  document.getElementById('rl-title').textContent = chpwd ? 'Nuova password amministratore' : ('Accesso a '+rpt.name);
+  document.getElementById('rl-hint').textContent = chpwd
+    ? 'Nuova password amministratore del '+(rpt.role==='Room'?'room server':'ripetitore')+' (max 15 caratteri). Conservala: senza non potrai più gestirlo da remoto.'
+    : 'Password del '+(rpt.role==='Room'?'room server':'ripetitore')+': amministratore per la gestione completa, ospite per la sola lettura. La richiesta viaggia sulla mesh e può richiedere fino a ~45 s.';
+  document.getElementById('rl-go').textContent = chpwd ? 'Cambia password' : 'Accedi';
+  document.getElementById('rl-status').textContent='';
+  const pw=document.getElementById('rl-pwd'); pw.value='';
+  document.getElementById('rpt-login-modal').hidden=false;
+  setTimeout(()=>pw.focus(),50);
+}
+function closeRptLogin(){
+  document.getElementById('rpt-login-modal').hidden=true;
+  document.getElementById('rl-pwd').value='';
+}
+async function rptLogin(pwd){
+  const r=await rptRun('login',{password:pwd});
+  if(r.ok){ rpt.pwd=pwd; rpt.session=(r.data&&r.data.is_admin)?'admin':'guest'; }
+  return r;
+}
+async function submitRptLogin(e){
+  e.preventDefault();
+  const pwd=document.getElementById('rl-pwd').value;
+  const st=document.getElementById('rl-status'), go=document.getElementById('rl-go');
+  if(rptLoginMode==='chpwd'){
+    if(!pwd){ st.textContent='Scrivi la nuova password.'; return; }
+    closeRptLogin();
+    const r=await rptCli('password '+pwd, null, 'password ***');
+    if(r && r.ok) rpt.pwd=pwd;   // i re-login successivi useranno la nuova
+    return;
+  }
+  go.disabled=true; st.textContent='Login in corso via mesh…';
+  try{
+    const r=await rptLogin(pwd);
+    if(!r.ok){ st.textContent='✗ '+(r.info||'accesso negato'); return; }
+    closeRptLogin();
+    if(document.getElementById('tab-rpt').hidden) showRptPage();
+    else { renderRptSession(); consoleLine('info','Login rinnovato ('+r.info+').'); }
+  }catch(err){ st.textContent='✗ '+err.message; }
+  finally{ go.disabled=false; }
+}
+async function rptRelogin(){
+  if(rpt.pwd==null){ showRptLogin('login'); return; }
+  const line=document.getElementById('rpt-status-line'), b=document.getElementById('rpt-relogin');
+  b.disabled=true; line.textContent='Login: in corso…';
+  try{
+    const r=await rptLogin(rpt.pwd);
+    line.textContent='Login: '+(r.ok?'✓ ':'✗ ')+(r.info||'');
+    if(!r.ok && r.info==='password errata') showRptLogin('login');
+    renderRptSession();
+  }catch(e){ line.textContent='Login: ✗ '+e.message; }
+  finally{ b.disabled=false; }
+}
+async function rptLogout(){
+  try{ await rptRun('logout'); }catch(e){}
+  rpt.session=null; rpt.pwd=null;
+  document.querySelector('#tabs .tab[data-tab="net"]').click();
+}
+function renderRptSession(){
+  const b=document.getElementById('rpt-session');
+  const s=rpt&&rpt.session;
+  b.className='badge '+(s==='admin'?'b-admin':(s==='guest'?'b-guest':'b-off'));
+  b.textContent= s==='admin' ? 'amministratore' : (s==='guest' ? 'ospite (sola lettura)' : 'non connesso');
+}
+function showRptPage(){
+  document.querySelectorAll('#tabs .tab').forEach(x=>x.classList.remove('active'));
+  ['charts','messages','map','net'].forEach(t=>{ document.getElementById('tab-'+t).hidden=true; });
+  document.getElementById('tab-rpt').hidden=false;
+  document.getElementById('rpt-title').textContent=(rpt.role==='Room'?'🏠 ':'📡 ')+rpt.name;
+  document.getElementById('rpt-sub').textContent=(TYPE_LABEL[rpt.role]||rpt.role||'')+' · '+rpt.id+
+    (rpt.hops!=null?(' · '+rpt.hops+' hop'):'')+(rpt.last_heard?(' · sentito '+ago(rpt.last_heard)+' fa'):'');
+  renderRptSession();
+  ['rpt-status','rpt-telemetry','rpt-acl','rpt-owner'].forEach(id=>{ document.getElementById(id).innerHTML='<div class="empty">—</div>'; });
+  document.getElementById('rpt-neigh').innerHTML='<tr><td colspan="3" style="text-align:center;color:var(--muted)">—</td></tr>';
+  document.getElementById('rpt-status-line').textContent='';
+  document.getElementById('rpt-console').innerHTML='';
+  renderRptSettings();
+  consoleLine('info','Connesso a '+rpt.name+' come '+(rpt.session==='admin'?'amministratore':'ospite')+'.');
+  window.scrollTo(0,0);
+  rptOp('status', document.querySelector('[data-rpt-op="status"]'));
+}
+async function rptOp(op, btn){
+  const line=document.getElementById('rpt-status-line'), lbl=RPT_OP_LBL[op]||op;
+  if(btn) btn.disabled=true;
+  line.textContent=lbl+': richiesta in corso…';
+  try{
+    const r=await rptRun(op);
+    line.textContent=lbl+': '+(r.ok?'✓ ':'✗ ')+(r.info||'');
+    if(r.ok && RPT_RENDER[op]) RPT_RENDER[op](r.data);
+    return r;
+  }catch(e){ line.textContent=lbl+': ✗ '+e.message; }
+  finally{ if(btn) btn.disabled=false; }
+}
+function fmtDur(s){
+  if(s==null) return null;
+  const d=Math.floor(s/86400), h=Math.floor(s%86400/3600), m=Math.floor(s%3600/60);
+  return (d?d+'g ':'')+((d||h)?h+'h ':'')+m+'m';
+}
+const kvRow=(k,v)=> (v==null||v==='') ? '' : '<div class="nm-row"><span class="k">'+k+'</span><span class="v">'+v+'</span></div>';
+const both=(a,b)=> (a==null&&b==null) ? null : ((a??'?')+' / '+(b??'?'));
+const RPT_RENDER={
+  status(d){
+    d=d||{};
+    document.getElementById('rpt-status').innerHTML=
+      kvRow('Batteria', d.bat?(d.bat/1000).toFixed(2)+' V':null)+
+      kvRow('Uptime', fmtDur(d.uptime))+
+      kvRow('Rumore di fondo', d.noise_floor!=null?d.noise_floor+' dBm':null)+
+      kvRow('Ultimo RSSI', d.last_rssi!=null?d.last_rssi+' dBm':null)+
+      kvRow('Ultimo SNR', d.last_snr!=null?d.last_snr+' dB':null)+
+      kvRow('Coda TX', d.tx_queue_len)+
+      kvRow('Pacchetti ricevuti', d.nb_recv)+
+      kvRow('Pacchetti inviati', d.nb_sent)+
+      kvRow('Flood ric. / inv.', both(d.recv_flood, d.sent_flood))+
+      kvRow('Diretti ric. / inv.', both(d.recv_direct, d.sent_direct))+
+      kvRow('Duplicati flood / dir.', both(d.flood_dups, d.direct_dups))+
+      kvRow('Airtime TX', fmtDur(d.airtime))+
+      kvRow('Airtime RX', fmtDur(d.rx_airtime))+
+      kvRow('Eventi coda piena', d.full_evts)+
+      kvRow('Errori di ricezione', d.recv_errors) || '<div class="empty">Nessun dato.</div>';
+  },
+  telemetry(items){
+    const el=document.getElementById('rpt-telemetry'); el.innerHTML='';
+    (items||[]).forEach(it=>{
+      let v=it.value; if(v&&typeof v==='object') v=JSON.stringify(v);
+      const d=document.createElement('div'); d.className='rank';
+      d.innerHTML='<span class="rn"></span><span class="rv"></span>';
+      d.querySelector('.rn').textContent='ch'+it.channel+' · '+String(it.type||'').replace(/_/g,' ');
+      d.querySelector('.rv').textContent=(typeof v==='number')?(Math.round(v*100)/100):String(v);
+      el.appendChild(d);
+    });
+    if(!el.children.length) el.innerHTML='<div class="empty">Nessun sensore.</div>';
+  },
+  neighbours(d){
+    const tb=document.getElementById('rpt-neigh'); tb.innerHTML='';
+    const items=((d&&d.items)||[]).slice().sort((a,b)=>(a.secs_ago||0)-(b.secs_ago||0));
+    items.forEach(n=>{
+      const tr=document.createElement('tr');
+      tr.innerHTML='<td></td><td>'+(fmtDur(n.secs_ago)||'?')+' fa</td><td>'+(n.snr!=null?n.snr.toFixed(1)+' dB':'')+'</td>';
+      tr.cells[0].textContent=n.name||('#'+n.pubkey);
+      tr.cells[0].title=n.pubkey||'';
+      tb.appendChild(tr);
+    });
+    if(!items.length) tb.innerHTML='<tr><td colspan="3" style="text-align:center;color:var(--muted)">Nessun vicino.</td></tr>';
+    else if(d.total>items.length) tb.insertAdjacentHTML('beforeend','<tr><td colspan="3" style="color:var(--muted)">… '+(d.total-items.length)+' non ricevuti</td></tr>');
+  },
+  acl(list){
+    const el=document.getElementById('rpt-acl'); el.innerHTML='';
+    (list||[]).forEach(a=>{
+      const d=document.createElement('div'); d.className='rank';
+      d.innerHTML='<span class="rn"></span><span class="rv"></span>';
+      d.querySelector('.rn').textContent=(a.name||('#'+a.key));
+      d.querySelector('.rn').title=a.key;
+      d.querySelector('.rv').textContent=ACL_ROLE[a.perm&3]||('perm '+a.perm);
+      el.appendChild(d);
+    });
+    if(!el.children.length) el.innerHTML='<div class="empty">Nessun accesso registrato.</div>';
+  },
+};
+async function rptAnon(btn){
+  btn.disabled=true;
+  const el=document.getElementById('rpt-owner');
+  el.innerHTML='<div class="empty">Richiesta in corso…</div>';
+  let h='';
+  try{
+    const o=await rptRun('owner');
+    if(o.ok&&o.data) h+=kvRow('Nome', escapeHtml(o.data.name))+kvRow('Proprietario', escapeHtml(o.data.owner||'—'));
+    else h+=kvRow('Proprietario', escapeHtml(o.info||'nessuna risposta'));
+    const g=await rptRun('regions');
+    h+=kvRow('Regioni', escapeHtml(g.ok ? (String(g.data||'').trim()||'nessuna') : (g.info||'nessuna risposta')));
+  }catch(e){ h+=kvRow('Errore', escapeHtml(e.message)); }
+  finally{ btn.disabled=false; }
+  el.innerHTML=h||'<div class="empty">—</div>';
+}
+function consoleLine(kind, text){
+  const el=document.getElementById('rpt-console');
+  const d=document.createElement('div'); d.className='c-'+kind; d.textContent=text;
+  el.appendChild(d); el.scrollTop=el.scrollHeight;
+}
+async function rptCli(cmd, btn, shown){
+  if(btn) btn.disabled=true;
+  try{
+    const r=await rptRun('cli',{cmd}, ()=>consoleLine('cmd','> '+(shown||cmd)));
+    if(r.ok) consoleLine('out', (r.data&&r.data.reply) ? r.data.reply : '(risposta vuota)');
+    else consoleLine('err', r.info||'errore');
+    return r;
+  }catch(e){ consoleLine('err', e.message); return null; }
+  finally{ if(btn) btn.disabled=false; }
+}
+const cleanReply=t=>String(t||'').replace(/^\s*>\s?/,'').trim();
+function renderRptSettings(){
+  const tb=document.getElementById('rpt-settings'); tb.innerHTML='';
+  RPT_SETTINGS.forEach(s=>{
+    const tr=document.createElement('tr');
+    tr.innerHTML='<td></td><td><input class="inp" type="'+(s.secret?'password':'text')+'" autocomplete="off"></td>'+
+                 '<td style="white-space:nowrap"><button class="btn">Leggi</button> <button class="btn">Imposta</button></td>';
+    tr.cells[0].textContent=s.l; tr.cells[0].title=s.k;
+    const inp=tr.querySelector('input'); inp.placeholder=s.k;
+    const [rb,wb]=tr.querySelectorAll('button');
+    rb.addEventListener('click',()=>rptGet(s,inp,rb));
+    wb.addEventListener('click',()=>rptSet(s,inp,wb));
+    s._inp=inp; s._rb=rb;
+    tb.appendChild(tr);
+  });
+}
+async function rptGet(s, inp, btn){
+  const r=await rptCli('get '+s.k, btn);
+  if(r && r.ok) inp.value=cleanReply(r.data&&r.data.reply);
+  return r;
+}
+async function rptSet(s, inp, btn){
+  const v=inp.value.trim();
+  if(!v){ consoleLine('err','Scrivi prima il valore di '+s.k+'.'); inp.focus(); return; }
+  if(s.warn && !confirm(s.warn+'\n\nProcedere?')) return;
+  await rptCli('set '+s.k+' '+v, btn, s.secret?('set '+s.k+' ***'):null);
+}
+async function rptReadAll(btn){
+  btn.disabled=true;
+  try{
+    for(const s of RPT_SETTINGS){
+      if(s.secret) continue;
+      if(document.getElementById('tab-rpt').hidden) break;   // pagina chiusa: smetto
+      await rptGet(s, s._inp, s._rb);
+    }
+  } finally { btn.disabled=false; }
+}
+function initRpt(){
+  document.getElementById('rl-form').addEventListener('submit', submitRptLogin);
+  document.getElementById('rl-x').addEventListener('click', closeRptLogin);
+  document.getElementById('rpt-login-modal').addEventListener('click', e=>{ if(e.target.id==='rpt-login-modal') closeRptLogin(); });
+  document.getElementById('rpt-back').addEventListener('click', ()=>document.querySelector('#tabs .tab[data-tab="net"]').click());
+  document.getElementById('rpt-relogin').addEventListener('click', rptRelogin);
+  document.getElementById('rpt-logout').addEventListener('click', rptLogout);
+  document.querySelectorAll('#tab-rpt [data-rpt-op]').forEach(b=>b.addEventListener('click',()=>rptOp(b.dataset.rptOp, b)));
+  document.querySelectorAll('#tab-rpt [data-cli]').forEach(b=>b.addEventListener('click',()=>{
+    if(b.dataset.confirm && !confirm(b.dataset.confirm)) return;
+    rptCli(b.dataset.cli, b);
+  }));
+  document.getElementById('rpt-chpwd').addEventListener('click', ()=>showRptLogin('chpwd'));
+  document.getElementById('rpt-readall').addEventListener('click', e=>rptReadAll(e.currentTarget));
+  document.getElementById('rpt-anon').addEventListener('click', e=>rptAnon(e.currentTarget));
+  document.getElementById('rpt-console-clear').addEventListener('click', ()=>{ document.getElementById('rpt-console').innerHTML=''; });
+  const cli=document.getElementById('rpt-cli');
+  const sendCli=()=>{
+    const c=cli.value.trim(); if(!c) return;
+    if(/^reboot\b|^erase\b|^start ota\b/i.test(c) && !confirm('Il comando «'+c+'» può rendere il ripetitore irraggiungibile. Procedere?')) return;
+    cli.value='';
+    rptCli(c, document.getElementById('rpt-cli-send'), /^password\s|^set guest\.password\s/i.test(c) ? c.replace(/^((?:set guest\.)?password)\s.*$/i,'$1 ***') : null);
+  };
+  document.getElementById('rpt-cli-send').addEventListener('click', sendCli);
+  cli.addEventListener('keydown', e=>{ if(e.key==='Enter') sendCli(); });
+}
 let msgTimer=null;
 function initTabs(){
   document.getElementById('tabs').addEventListener('click', e=>{
@@ -1027,6 +1462,7 @@ function initTabs(){
     document.getElementById('tab-messages').hidden = (tab!=='messages');
     document.getElementById('tab-map').hidden      = (tab!=='map');
     document.getElementById('tab-net').hidden      = (tab!=='net');
+    document.getElementById('tab-rpt').hidden      = true;
     if(tab==='net'){ loadNet(); if(!netTimer) netTimer=setInterval(()=>{ if(!document.getElementById('tab-net').hidden){ loadCmdLog(); } }, 5000); }
     if(tab==='messages'){
       loadChannels()
@@ -1062,7 +1498,8 @@ function initTabs(){
   });
   document.getElementById('nm-x').addEventListener('click', closeNodeInfo);
   document.getElementById('node-modal').addEventListener('click', e=>{ if(e.target.id==='node-modal') closeNodeInfo(); });
-  document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeNodeInfo(); });
+  document.addEventListener('keydown', e=>{ if(e.key==='Escape'){ closeNodeInfo(); closeRptLogin(); } });
+  initRpt();
   document.getElementById('advert-btn').addEventListener('click', doAdvert);
   document.getElementById('autoadv-save').addEventListener('click', saveMcConfig);
   document.getElementById('prune-btn').addEventListener('click', doPrune);
