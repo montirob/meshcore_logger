@@ -543,6 +543,126 @@ async def rpt_action(mc, params):
         data = {k: v for k, v in data.items() if k != "tag"}
     return {"op": op, "ok": True, "info": "ok", "data": data}
 
+# ---------------- Configurazione del nodo locale (companion collegato al Pi) ----------------
+# Tutto passa dal protocollo companion (niente mesh): risposte immediate.
+# Codici firmware: telemetria 0=negata, 1=solo contatti con permesso, 2=tutti;
+# autoadd_config = bitmask AUTO_ADD_* (bit0 = sovrascrivi i più vecchi a rubrica piena).
+SELF_OTHER_KEYS = ("telemetry_mode_base", "telemetry_mode_loc", "telemetry_mode_env",
+                   "adv_loc_policy", "multi_acks", "manual_add_contacts")
+
+async def _ask(fn):
+    """Payload della risposta del nodo, o None (errore, timeout, comando non supportato)."""
+    try:
+        ev = await asyncio.wait_for(_maybe(fn()), CALL_TIMEOUT)
+    except Exception:
+        return None
+    if ev is None or _is_err(ev):
+        return None
+    return getattr(ev, "payload", None)
+
+async def self_read(mc, con):
+    """Legge configurazione, stato e statistiche del nodo locale. Salva l'ultima
+    lettura in meta (`self_state`) così la pagina la mostra subito all'apertura."""
+    c = mc.commands
+    st = {"ts": int(time.time())}
+    st["info"] = await _ask(c.send_appstart) or {}
+    st["device"] = await _ask(c.send_device_query) or {}
+    st["battery"] = await _ask(c.get_bat)
+    t = await _ask(c.get_time)
+    st["clock"] = {"node": t.get("time"), "pi": int(time.time())} if t else None
+    tun = await _ask(c.get_tuning)
+    st["tuning"] = {"rx_delay": tun["rx_delay"] / 1000.0, "af": tun["airtime_factor"] / 1000.0} if tun else None
+    st["autoadd"] = await _ask(c.get_autoadd_config)
+    st["custom_vars"] = await _ask(c.get_custom_vars)
+    rf = await _ask(c.get_allowed_repeat_freq)
+    st["repeat_freqs"] = (rf or {}).get("freqs")
+    st["stats"] = {"core": await _ask(c.get_stats_core),
+                   "radio": await _ask(c.get_stats_radio),
+                   "packets": await _ask(c.get_stats_packets)}
+    tel = await _ask(c.get_self_telemetry)
+    st["telemetry"] = _lpp_items(tel) if tel else None
+    info = st["info"]
+    if info:
+        set_meta(con, "self_name", info.get("name") or "")
+        if info.get("adv_lat") or info.get("adv_lon"):
+            set_meta(con, "self_lat", info.get("adv_lat"))
+            set_meta(con, "self_lon", info.get("adv_lon"))
+    set_meta(con, "self_state", json.dumps(st, default=str))
+    return st
+
+async def self_set(mc, con, ch):
+    """Applica le modifiche `ch` (solo le chiavi presenti) e rilegge lo stato.
+    Ritorna {applied: {chiave: "ok" | motivo}, state}."""
+    c = mc.commands
+    applied = {}
+    async def step(key, fn):
+        try:
+            ev = await asyncio.wait_for(_maybe(fn()), CALL_TIMEOUT)
+        except Exception as e:
+            applied[key] = "errore: " + (str(e) or type(e).__name__); return
+        if ev is None or _is_err(ev):
+            pl = (getattr(ev, "payload", None) or {}) if ev is not None else {}
+            applied[key] = "rifiutato dal nodo" + (f" ({pl.get('code_string') or pl.get('error_code') or pl.get('reason')})" if pl else "")
+        else:
+            applied[key] = "ok"
+    if "name" in ch:
+        await step("name", lambda: c.set_name(str(ch["name"])))
+    if "lat" in ch and "lon" in ch:
+        await step("coords", lambda: c.set_coords(float(ch["lat"]), float(ch["lon"])))
+    if "tx_power" in ch:
+        await step("tx_power", lambda: c.set_tx_power(int(ch["tx_power"])))
+    if "radio" in ch:
+        r = ch["radio"]
+        await step("radio", lambda: c.set_radio(float(r["freq"]), float(r["bw"]), int(r["sf"]), int(r["cr"]),
+                                                 (int(bool(r["repeat"])) if r.get("repeat") is not None else None)))
+    if "tuning" in ch:
+        tu = ch["tuning"]   # il firmware li vuole moltiplicati per 1000
+        await step("tuning", lambda: c.set_tuning(int(round(float(tu["rx_delay"]) * 1000)), int(round(float(tu["af"]) * 1000))))
+    if any(k in ch for k in SELF_OTHER_KEYS):
+        # un unico comando porta tutti questi campi: parto dai valori attuali
+        async def other():
+            ev = await _maybe(c.send_appstart())
+            if ev is None or _is_err(ev):
+                return ev
+            infos = dict(ev.payload)
+            for k in SELF_OTHER_KEYS:
+                if k in ch:
+                    infos[k] = bool(ch[k]) if k == "manual_add_contacts" else int(ch[k])
+            return await _maybe(c.set_other_params_from_infos(infos))
+        await step("other", other)
+    if "autoadd" in ch:
+        a = ch["autoadd"]   # la libreria non manda max_hops: frame scritto a mano
+        frame = bytes([0x3A, int(a["config"]) & 0xFF]) + (bytes([int(a["max_hops"])]) if a.get("max_hops") is not None else b"")
+        await step("autoadd", lambda: c.send(frame, [EventType.OK, EventType.ERROR]))
+    if "path_hash_mode" in ch:
+        await step("path_hash_mode", lambda: c.set_path_hash_mode(int(ch["path_hash_mode"])))
+    for k, v in (ch.get("custom_vars") or {}).items():
+        await step("var " + k, lambda k=k, v=v: c.set_custom_var(str(k), str(v)))
+    log(f"nodo locale: modifiche {applied}")
+    return {"applied": applied, "state": await self_read(mc, con)}
+
+async def self_action(mc, con, params):
+    op = params.get("op")
+    if op == "read":
+        return {"op": op, "state": await self_read(mc, con)}
+    if op == "set":
+        return dict(await self_set(mc, con, params.get("changes") or {}), op=op)
+    if op == "time_sync":
+        now = int(time.time())
+        ev = await asyncio.wait_for(_maybe(mc.commands.set_time(now)), CALL_TIMEOUT)
+        if ev is None or _is_err(ev):
+            raise RuntimeError("il nodo ha rifiutato l'orario")
+        return {"op": op, "time": now}
+    if op == "reboot":
+        # il nodo non risponde (si riavvia): la connessione cade e il loop si
+        # riconnette da solo (timeout sulle richieste -> riconnessione)
+        try:
+            await asyncio.wait_for(_maybe(mc.commands.reboot()), 5)
+        except Exception:
+            pass
+        return {"op": op, "info": "riavvio inviato"}
+    raise RuntimeError("operazione sconosciuta: " + str(op))
+
 async def process_mc_commands(mc, con):
     """Esegue i comandi MeshCore accodati dal web (advert, ping) e riscrive il risultato.
     Estensibile: nuove azioni = nuovi rami qui + endpoint web."""
@@ -613,6 +733,8 @@ async def process_mc_commands(mc, con):
                 con.execute("UPDATE mc_commands SET params=? WHERE id=?", (json.dumps(_redact(params)), cid))
                 con.commit()
                 res = await rpt_action(mc, params)
+            elif action == "self":
+                res = await self_action(mc, con, params)
             else:
                 raise RuntimeError("azione sconosciuta: " + str(action))
             con.execute("UPDATE mc_commands SET status='done', result=?, done_ts=? WHERE id=?",

@@ -585,6 +585,97 @@ def mc_prune():
         return jsonify({"error": "giorni non validi"}), 400
     return jsonify({"queued": True, "id": _enqueue("prune", {"days": days})})
 
+LORA_BW = (7.8, 10.4, 15.6, 20.8, 31.25, 41.7, 62.5, 125, 250, 500)   # kHz
+
+def _check_self_changes(ch):
+    """Valida le modifiche al nodo locale (stessi limiti del firmware).
+    Ritorna (modifiche normalizzate, None) oppure (None, messaggio d'errore)."""
+    out = {}
+    def num(v, lo, hi, what, cast=float):
+        try:
+            x = cast(v)
+        except (TypeError, ValueError):
+            raise ValueError(what + " non valido")
+        if not (lo <= x <= hi):
+            raise ValueError(f"{what} fuori range ({lo}…{hi})")
+        return x
+    try:
+        if "name" in ch:
+            name = str(ch["name"] or "").strip()
+            if not name or len(name.encode("utf-8")) > 31:
+                raise ValueError("nome vuoto o troppo lungo (max 31 byte)")
+            out["name"] = name
+        if "lat" in ch or "lon" in ch:
+            out["lat"] = num(ch.get("lat"), -90, 90, "latitudine")
+            out["lon"] = num(ch.get("lon"), -180, 180, "longitudine")
+        if "tx_power" in ch:
+            out["tx_power"] = num(ch["tx_power"], -9, 40, "potenza TX", int)
+        if "radio" in ch:
+            r = ch["radio"] or {}
+            bw = num(r.get("bw"), 7, 500, "larghezza di banda")
+            if not any(abs(bw - b) < 0.05 for b in LORA_BW):
+                raise ValueError("larghezza di banda non standard")
+            out["radio"] = {"freq": num(r.get("freq"), 150, 2500, "frequenza"), "bw": bw,
+                            "sf": num(r.get("sf"), 5, 12, "spreading factor", int),
+                            "cr": num(r.get("cr"), 5, 8, "coding rate", int),
+                            "repeat": (bool(r["repeat"]) if r.get("repeat") is not None else None)}
+        if "tuning" in ch:
+            t = ch["tuning"] or {}
+            out["tuning"] = {"rx_delay": num(t.get("rx_delay"), 0, 100, "RX delay"),
+                             "af": num(t.get("af"), 0, 9, "airtime factor")}
+        for k in ("telemetry_mode_base", "telemetry_mode_loc", "telemetry_mode_env"):
+            if k in ch:
+                out[k] = num(ch[k], 0, 2, k, int)
+        for k in ("adv_loc_policy", "multi_acks"):
+            if k in ch:
+                out[k] = num(ch[k], 0, 1, k, int)
+        if "manual_add_contacts" in ch:
+            out["manual_add_contacts"] = bool(ch["manual_add_contacts"])
+        if "autoadd" in ch:
+            a = ch["autoadd"] or {}
+            out["autoadd"] = {"config": num(a.get("config"), 0, 31, "autoadd", int),
+                              "max_hops": (num(a["max_hops"], 0, 64, "max salti", int) if a.get("max_hops") is not None else None)}
+        if "path_hash_mode" in ch:
+            out["path_hash_mode"] = num(ch["path_hash_mode"], 0, 2, "path hash mode", int)
+        if "custom_vars" in ch:
+            cv = {}
+            for k, v in (ch["custom_vars"] or {}).items():
+                k, v = str(k).strip(), str(v).strip()
+                if not k or any(c in k + v for c in ":,") or len((k + v).encode("utf-8")) > 60:
+                    raise ValueError("variabile non valida: " + k)
+                cv[k] = v
+            out["custom_vars"] = cv
+    except ValueError as e:
+        return None, str(e)
+    if not out:
+        return None, "nessuna modifica"
+    return out, None
+
+@app.route("/api/mc/self", methods=["GET", "POST", "OPTIONS"])
+def mc_self():
+    """Nodo locale. GET: ultima lettura salvata dal logger (`{state}`, null se mai letta).
+    POST `{op}`: read · set (`changes`) · time_sync · reboot → accodato, `{queued, id}`."""
+    if request.method == "OPTIONS":
+        return ("", 204)
+    if request.method == "GET":
+        try:
+            row = q("SELECT value FROM meta WHERE key='self_state'")
+            state = json.loads(row[0]["value"]) if row and row[0]["value"] else None
+        except (sqlite3.Error, ValueError):
+            state = None
+        return jsonify({"state": state})
+    data = request.get_json(silent=True) or {}
+    op = data.get("op")
+    if op not in ("read", "set", "time_sync", "reboot"):
+        return jsonify({"error": "operazione non valida"}), 400
+    params = {"op": op}
+    if op == "set":
+        changes, err = _check_self_changes(data.get("changes") or {})
+        if err:
+            return jsonify({"error": err}), 400
+        params["changes"] = changes
+    return jsonify({"queued": True, "id": _enqueue("self", params)})
+
 CONFIG_KEYS = ("auto_advert_min", "auto_prune_days")
 
 @app.route("/api/mc/config", methods=["GET", "POST", "OPTIONS"])

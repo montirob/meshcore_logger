@@ -172,6 +172,16 @@
       font:12px/1.5 ui-monospace,Consolas,monospace;height:220px;overflow:auto;white-space:pre-wrap;word-break:break-word;margin:0 0 8px}
   .console .c-cmd{color:var(--hum)} .console .c-err{color:var(--temp)} .console .c-info{color:var(--muted)}
   .hint{font-size:12px;color:var(--muted)}
+  .form{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px 16px;margin-bottom:8px}
+  .fld label{display:block;font-size:12px;color:var(--ink2);margin-bottom:3px}
+  .fld .inp{width:100%;padding:6px 8px;font-size:13px}
+  .chk{display:flex;align-items:center;gap:7px;font-size:13px;color:var(--ink2);padding:3px 0}
+  .chk input{width:16px;height:16px;flex:none}
+  .chkrow{display:flex;flex-wrap:wrap;gap:4px 16px;margin:4px 0 8px}
+  .callout{border-left:3px solid var(--pres);background:color-mix(in srgb,var(--pres) 10%,transparent);
+      border-radius:6px;padding:8px 10px;margin:6px 0 8px}
+  .warnbox{border-left:3px solid var(--temp);background:color-mix(in srgb,var(--temp) 10%,transparent);
+      border-radius:6px;padding:8px 10px;margin:0 0 10px;font-size:12px;color:var(--ink2)}
 </style>
 </head>
 <body>
@@ -193,6 +203,7 @@
     <button class="tab" data-tab="messages">💬 Messaggi</button>
     <button class="tab" data-tab="map">🗺️ Mappa</button>
     <button class="tab" data-tab="net">🛰️ Rete</button>
+    <button class="tab" data-tab="self">📻 Il mio nodo</button>
   </div>
 
   <section id="tab-charts">
@@ -413,6 +424,109 @@
         <input id="rpt-cli" class="inp" style="flex:1;min-width:180px" maxlength="150" placeholder="Comando, es. get radio · neighbors · set tx 20">
         <button class="btn primary" id="rpt-cli-send">Invia</button>
       </div>
+    </div>
+  </section>
+
+  <section id="tab-self" hidden>
+    <div class="rpt-head">
+      <div class="rpt-name">
+        <h2 id="self-title">📻 Il mio nodo</h2>
+        <div class="sub" id="self-sub">Il nodo MeshCore a cui il Raspberry è collegato via WiFi.</div>
+      </div>
+      <button class="btn" id="self-refresh">↻ Rileggi dal nodo</button>
+      <button class="btn danger" id="self-reboot">🔁 Riavvia</button>
+    </div>
+    <div class="sendstatus" id="self-status"></div>
+
+    <div class="grid2">
+      <div class="card">
+        <h2>ℹ️ Dispositivo</h2>
+        <div id="self-dev" class="kv"><div class="empty">—</div></div>
+        <div class="actions" style="margin:8px 0 6px"><button class="btn" id="self-timesync">⏱ Sincronizza orologio col Raspberry</button></div>
+      </div>
+      <div class="card">
+        <h2>🌡️ Telemetria attuale</h2>
+        <div id="self-tel" class="ranklist"><div class="empty">—</div></div>
+        <div class="hint" style="margin:6px 0">È quello che il nodo risponde quando qualcuno gli chiede la telemetria (ch1 = scheda, ch2 = BME280).</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>📤 Condivisione telemetria <button class="btn" data-self-save="telemetry">Salva</button></h2>
+      <div class="form">
+        <div class="fld"><label for="sf-tm-base">Base (batteria, tensione)</label><select id="sf-tm-base" class="inp"></select></div>
+        <div class="fld"><label for="sf-tm-loc">Posizione (GPS)</label><select id="sf-tm-loc" class="inp"></select></div>
+        <div class="fld"><label for="sf-tm-env">Ambiente (sensori, es. BME280)</label><select id="sf-tm-env" class="inp"></select></div>
+      </div>
+      <div class="hint" style="margin-bottom:6px">Decide chi, sulla mesh, può leggere la telemetria di questo nodo. "Solo contatti autorizzati" vale per i contatti a cui è stato dato il permesso telemetria dall'app MeshCore. La lettura del Raspberry, via WiFi, funziona sempre.</div>
+    </div>
+
+    <div class="card">
+      <h2>📡 Radio <button class="btn" data-self-save="radio">Salva</button></h2>
+      <div class="warnbox">Frequenza, banda, SF e CR devono essere <b>uguali al resto della rete</b>: con valori diversi il nodo non sente più nessuno. Il collegamento WiFi con il Raspberry resta attivo, quindi si può sempre rimediare da qui. Le modifiche valgono subito, senza riavvio.</div>
+      <div class="form">
+        <div class="fld"><label for="sf-freq">Frequenza (MHz)</label><input id="sf-freq" class="inp" type="number" step="0.001" min="150" max="2500"></div>
+        <div class="fld"><label for="sf-bw">Larghezza di banda (kHz)</label><select id="sf-bw" class="inp"></select></div>
+        <div class="fld"><label for="sf-sf">Spreading factor</label><select id="sf-sf" class="inp"></select></div>
+        <div class="fld"><label for="sf-cr">Coding rate</label><select id="sf-cr" class="inp"></select></div>
+        <div class="fld"><label for="sf-tx">Potenza TX (dBm) <span id="sf-txmax" class="hint"></span></label><input id="sf-tx" class="inp" type="number" step="1" min="-9"></div>
+      </div>
+      <div id="sf-repeat-box" hidden>
+        <label class="chk"><input type="checkbox" id="sf-repeat"> Ripeti i pacchetti degli altri (modalità ripetitore del companion)</label>
+        <div class="hint" id="sf-repeat-hint"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>🏷️ Identità e posizione <button class="btn" data-self-save="identity">Salva</button></h2>
+      <div class="form">
+        <div class="fld"><label for="sf-name">Nome del nodo</label><input id="sf-name" class="inp" maxlength="31"></div>
+        <div class="fld"><label for="sf-lat">Latitudine</label><input id="sf-lat" class="inp" type="number" step="0.000001" min="-90" max="90"></div>
+        <div class="fld"><label for="sf-lon">Longitudine</label><input id="sf-lon" class="inp" type="number" step="0.000001" min="-180" max="180"></div>
+      </div>
+      <label class="chk"><input type="checkbox" id="sf-advloc"> Includi la posizione negli advert (il nodo compare sulle mappe degli altri)</label>
+    </div>
+
+    <div class="card">
+      <h2>👥 Contatti <button class="btn" data-self-save="contacts">Salva</button></h2>
+      <div class="callout">
+        <label class="chk"><input type="checkbox" id="sf-overwrite"> <b>A rubrica piena, sostituisci il contatto più vecchio</b></label>
+        <div class="hint">Evita il blocco a <span id="sf-maxc">350</span> contatti: invece di smettere di registrare i nodi nuovi, il firmware fa posto togliendo il contatto sentito meno di recente.</div>
+      </div>
+      <label class="chk"><input type="radio" name="sf-addmode" value="all" id="sf-add-all"> Aggiungi automaticamente tutti i nodi che si annunciano</label>
+      <label class="chk"><input type="radio" name="sf-addmode" value="manual" id="sf-add-sel"> Aggiungi automaticamente solo questi tipi:</label>
+      <div class="chkrow" style="padding-left:24px">
+        <label class="chk"><input type="checkbox" id="sf-aa-chat"> Client</label>
+        <label class="chk"><input type="checkbox" id="sf-aa-rpt"> Ripetitori</label>
+        <label class="chk"><input type="checkbox" id="sf-aa-room"> Room</label>
+        <label class="chk"><input type="checkbox" id="sf-aa-sens"> Sensori</label>
+      </div>
+      <div class="form">
+        <div class="fld"><label for="sf-aa-hops">Solo se entro N salti (0 = nessun limite)</label><input id="sf-aa-hops" class="inp" type="number" min="0" max="64" step="1"></div>
+      </div>
+    </div>
+
+    <div class="grid2">
+      <div class="card">
+        <h2>⚙️ Avanzate <button class="btn" data-self-save="advanced">Salva</button></h2>
+        <div class="form" style="grid-template-columns:1fr 1fr">
+          <div class="fld"><label for="sf-rxd">RX delay base</label><input id="sf-rxd" class="inp" type="number" step="0.1" min="0"></div>
+          <div class="fld"><label for="sf-af">Airtime factor</label><input id="sf-af" class="inp" type="number" step="0.1" min="0"></div>
+          <div class="fld" style="grid-column:1/-1"><label for="sf-phm">Dimensione hash del percorso</label><select id="sf-phm" class="inp">
+            <option value="0">1 byte (compatibile con tutti)</option><option value="1">2 byte</option><option value="2">3 byte</option></select></div>
+        </div>
+        <label class="chk"><input type="checkbox" id="sf-multiack"> ACK multipli sui messaggi diretti (consegna più affidabile)</label>
+      </div>
+      <div class="card">
+        <h2>🧩 Variabili del firmware <button class="btn" data-self-save="vars">Salva</button></h2>
+        <div id="self-vars"><div class="empty">—</div></div>
+        <div class="hint" style="margin:6px 0">Opzioni specifiche della scheda (es. <code>gps</code> on/off), esposte dal firmware.</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>📈 Statistiche</h2>
+      <div id="self-stats" class="kv"><div class="empty">—</div></div>
     </div>
   </section>
 
@@ -700,7 +814,7 @@ function openDm(node_id, name){
   curMsgChannel='dm'; curDmPeer={id:node_id, name:name||node_id};
   document.querySelectorAll('#tabs .tab').forEach(x=>x.classList.remove('active'));
   const mt=document.querySelector('#tabs .tab[data-tab="messages"]'); if(mt) mt.classList.add('active');
-  ['charts','messages','map','net','rpt'].forEach(t=>{ document.getElementById('tab-'+t).hidden = (t!=='messages'); });
+  ['charts','messages','map','net','rpt','self'].forEach(t=>{ document.getElementById('tab-'+t).hidden = (t!=='messages'); });
   document.getElementById('dm-peers').hidden=false;
   loadChannels().then(()=>loadDmPeers()).then(()=>{ loadMessages(true); document.getElementById('send-text').focus(); });
   loadMeshStats();
@@ -831,6 +945,7 @@ function showNodeOnMap(id){
   document.getElementById('tab-messages').hidden=true;
   document.getElementById('tab-net').hidden=true;
   document.getElementById('tab-rpt').hidden=true;
+  document.getElementById('tab-self').hidden=true;
   document.getElementById('tab-map').hidden=false;
   document.querySelectorAll('#map-filter .btn').forEach(x=>x.classList.remove('active'));
   const ab=document.querySelector('#map-filter .btn[data-f="all"]'); if(ab) ab.classList.add('active');
@@ -854,6 +969,7 @@ async function showRoute(m){
   document.getElementById('tab-messages').hidden=true;
   document.getElementById('tab-net').hidden=true;
   document.getElementById('tab-rpt').hidden=true;
+  document.getElementById('tab-self').hidden=true;
   document.getElementById('tab-map').hidden=false;
   ensureMap(); clearRoute();
   const pts=[];
@@ -1078,6 +1194,11 @@ async function loadCmdLog(){
       c.action='🛠 '+(p.op==='cli'?('«'+(p.cmd||'')+'»'):(RPT_OP_LBL[p.op]||p.op||''));
       if(r) desc=(r.ok?'✓ ':'✗ ')+(r.info||'');
     }
+    if(c.action==='self'){
+      let p={}; try{ p=c.params?JSON.parse(c.params):{}; }catch(e){}
+      c.action='📻 Mio nodo: '+(SELF_OP_LBL[p.op]||p.op||'');
+      if(c.status==='done') desc='fatto';
+    }
     const LBL={advert:'📢 Advertise', ping:'📡 Ping', prune:'🧹 Pulizia rubrica'};
     const d=document.createElement('div'); d.className='rank';
     d.innerHTML='<span class="rn"></span><span class="rv"></span>';
@@ -1183,15 +1304,19 @@ function rptRun(op, extra, onStart){
 async function rptRunNow(op, extra){
   const r=await mcPost('/api/mc/rpt', Object.assign({node_id:rpt.id, op}, extra||{}));
   if(r.error) throw new Error(r.error);
+  return waitCmd(r.id, 120000);
+}
+// Attende l'esito di un comando in coda (mc_commands) e ne ritorna il risultato.
+async function waitCmd(id, maxMs){
   const t0=Date.now();
-  while(Date.now()-t0<120000){
+  while(Date.now()-t0<maxMs){
     await sleep(1500);
-    let c; try{ c=await (await apiFetch('/api/mc/cmd?id='+r.id)).json(); }catch(e){ continue; }
+    let c; try{ c=await (await apiFetch('/api/mc/cmd?id='+id)).json(); }catch(e){ continue; }
     if(!c || c.status==='pending') continue;
     if(c.status==='error') throw new Error(c.error||'errore');
     try{ return JSON.parse(c.result||'{}'); }catch(e){ return {}; }
   }
-  throw new Error('nessun esito dopo 2 minuti: il logger è in esecuzione e collegato al nodo?');
+  throw new Error('nessun esito dopo '+Math.round(maxMs/60000)+' minuti: il logger è in esecuzione e collegato al nodo?');
 }
 function openRptLogin(nd){
   rpt={id:nd.node_id, name:nd.long_name||nd.node_id, role:nd.role, hops:nd.hops,
@@ -1266,7 +1391,7 @@ function renderRptSession(){
 }
 function showRptPage(){
   document.querySelectorAll('#tabs .tab').forEach(x=>x.classList.remove('active'));
-  ['charts','messages','map','net'].forEach(t=>{ document.getElementById('tab-'+t).hidden=true; });
+  ['charts','messages','map','net','self'].forEach(t=>{ document.getElementById('tab-'+t).hidden=true; });
   document.getElementById('tab-rpt').hidden=false;
   document.getElementById('rpt-title').textContent=(rpt.role==='Room'?'🏠 ':'📡 ')+rpt.name;
   document.getElementById('rpt-sub').textContent=(TYPE_LABEL[rpt.role]||rpt.role||'')+' · '+rpt.id+
@@ -1299,6 +1424,18 @@ function fmtDur(s){
   return (d?d+'g ':'')+((d||h)?h+'h ':'')+m+'m';
 }
 const kvRow=(k,v)=> (v==null||v==='') ? '' : '<div class="nm-row"><span class="k">'+k+'</span><span class="v">'+v+'</span></div>';
+function renderLpp(el, items){   // elenco telemetria LPP [{channel,type,value}]
+  el.innerHTML='';
+  (items||[]).forEach(it=>{
+    let v=it.value; if(v&&typeof v==='object') v=JSON.stringify(v);
+    const d=document.createElement('div'); d.className='rank';
+    d.innerHTML='<span class="rn"></span><span class="rv"></span>';
+    d.querySelector('.rn').textContent='ch'+it.channel+' · '+String(it.type||'').replace(/_/g,' ');
+    d.querySelector('.rv').textContent=(typeof v==='number')?(Math.round(v*100)/100):String(v);
+    el.appendChild(d);
+  });
+  if(!el.children.length) el.innerHTML='<div class="empty">Nessun sensore.</div>';
+}
 const both=(a,b)=> (a==null&&b==null) ? null : ((a??'?')+' / '+(b??'?'));
 const RPT_RENDER={
   status(d){
@@ -1320,18 +1457,7 @@ const RPT_RENDER={
       kvRow('Eventi coda piena', d.full_evts)+
       kvRow('Errori di ricezione', d.recv_errors) || '<div class="empty">Nessun dato.</div>';
   },
-  telemetry(items){
-    const el=document.getElementById('rpt-telemetry'); el.innerHTML='';
-    (items||[]).forEach(it=>{
-      let v=it.value; if(v&&typeof v==='object') v=JSON.stringify(v);
-      const d=document.createElement('div'); d.className='rank';
-      d.innerHTML='<span class="rn"></span><span class="rv"></span>';
-      d.querySelector('.rn').textContent='ch'+it.channel+' · '+String(it.type||'').replace(/_/g,' ');
-      d.querySelector('.rv').textContent=(typeof v==='number')?(Math.round(v*100)/100):String(v);
-      el.appendChild(d);
-    });
-    if(!el.children.length) el.innerHTML='<div class="empty">Nessun sensore.</div>';
-  },
+  telemetry(items){ renderLpp(document.getElementById('rpt-telemetry'), items); },
   neighbours(d){
     const tb=document.getElementById('rpt-neigh'); tb.innerHTML='';
     const items=((d&&d.items)||[]).slice().sort((a,b)=>(a.secs_ago||0)-(b.secs_ago||0));
@@ -1451,6 +1577,239 @@ function initRpt(){
   document.getElementById('rpt-cli-send').addEventListener('click', sendCli);
   cli.addEventListener('keydown', e=>{ if(e.key==='Enter') sendCli(); });
 }
+// ---------------- Il mio nodo (companion collegato al Pi) ----------------
+// Letture e modifiche passano dalla coda comandi (azione `self`): il logger le
+// esegue sulla sua connessione WiFi al nodo, senza passare dalla mesh.
+const SELF_OP_LBL={read:'lettura', set:'modifica impostazioni', time_sync:'sincronizza orologio', reboot:'riavvio'};
+const TELEM_MODES=[[0,'Negata a tutti'],[1,'Solo contatti autorizzati'],[2,'Tutti']];
+const LORA_BWS=[7.8,10.4,15.6,20.8,31.25,41.7,62.5,125,250,500];
+const AA={overwrite:1, chat:2, rpt:4, room:8, sens:16};   // bit AUTO_ADD_* del firmware
+const APPLIED_LBL={name:'nome', coords:'posizione', tx_power:'potenza TX', radio:'radio', tuning:'tuning',
+  other:'telemetria/opzioni', autoadd:'aggiunta contatti', path_hash_mode:'hash percorso'};
+let selfState=null, selfQueue=Promise.resolve();
+const $=id=>document.getElementById(id);
+
+function selfRun(op, extra){   // una operazione alla volta
+  const p=selfQueue.then(async()=>{
+    const r=await mcPost('/api/mc/self', Object.assign({op}, extra||{}));
+    if(r.error) throw new Error(r.error);
+    return waitCmd(r.id, 90000);
+  });
+  selfQueue=p.catch(()=>{});
+  return p;
+}
+function fillSelect(el, opts){ el.innerHTML=opts.map(([v,l])=>'<option value="'+v+'">'+l+'</option>').join(''); }
+function initSelfForm(){
+  ['sf-tm-base','sf-tm-loc','sf-tm-env'].forEach(id=>fillSelect($(id), TELEM_MODES));
+  fillSelect($('sf-bw'), LORA_BWS.map(b=>[b,b]));
+  fillSelect($('sf-sf'), [5,6,7,8,9,10,11,12].map(x=>[x,'SF'+x]));
+  fillSelect($('sf-cr'), [5,6,7,8].map(x=>[x,'4/'+x]));
+  document.querySelectorAll('input[name="sf-addmode"]').forEach(r=>r.addEventListener('change', syncAddMode));
+}
+function syncAddMode(){
+  const manual=$('sf-add-sel').checked;
+  ['sf-aa-chat','sf-aa-rpt','sf-aa-room','sf-aa-sens'].forEach(id=>{ $(id).disabled=!manual; });
+}
+async function openSelf(){
+  try{ const r=await (await apiFetch('/api/mc/self')).json(); if(r.state) renderSelf(r.state); }catch(e){}
+  selfRead();   // la lettura dal nodo è locale e veloce: la rifaccio a ogni apertura
+}
+async function selfRead(){
+  const st=$('self-status'), b=$('self-refresh');
+  b.disabled=true; st.textContent='Lettura dal nodo…';
+  try{ const r=await selfRun('read'); renderSelf(r.state); st.textContent='✓ Letto dal nodo alle '+new Date().toLocaleTimeString('it-IT')+'.'; }
+  catch(e){ st.textContent='✗ '+e.message; }
+  finally{ b.disabled=false; }
+}
+function renderSelf(s){
+  selfState=s;
+  const i=s.info||{}, dv=s.device||{};
+  $('self-title').textContent='📻 '+(i.name||'Il mio nodo');
+  $('self-sub').textContent=[dv.model, dv.ver&&('firmware '+dv.ver), i.public_key&&i.public_key.slice(0,12),
+    s.ts&&('letto '+fmtDateTime(s.ts*1000))].filter(Boolean).join(' · ');
+  // dispositivo
+  const bat=s.battery||{}, clk=s.clock;
+  let drift=null;
+  if(clk&&clk.node){
+    const d=clk.node-clk.pi, a=Math.abs(d);
+    drift=fmtDateTime(clk.node*1000)+' · '+(a<5?'allineato':((d>0?'avanti ':'indietro ')+(a<3600?a+' s':fmtDur(a))));
+  }
+  $('self-dev').innerHTML=
+    kvRow('Modello', escapeHtml(dv.model))+
+    kvRow('Firmware', escapeHtml([dv.ver, dv.fw_build].filter(Boolean).join(' · ')))+
+    kvRow('Batteria', bat.level?(bat.level/1000).toFixed(2)+' V':null)+
+    kvRow('Memoria', bat.total_kb?(bat.used_kb+' / '+bat.total_kb+' kB'):null)+
+    kvRow('Orologio', drift)+
+    kvRow('Max contatti', dv.max_contacts)+
+    kvRow('Max canali', dv.max_channels)+
+    kvRow('Chiave pubblica', i.public_key?('<span title="'+i.public_key+'">'+i.public_key.slice(0,16)+'…</span>'):null)
+    || '<div class="empty">Nessun dato.</div>';
+  renderLpp($('self-tel'), s.telemetry);
+  // telemetria
+  $('sf-tm-base').value=i.telemetry_mode_base??0;
+  $('sf-tm-loc').value=i.telemetry_mode_loc??0;
+  $('sf-tm-env').value=i.telemetry_mode_env??0;
+  // radio
+  $('sf-freq').value=i.radio_freq??'';
+  const bw=LORA_BWS.find(b=>Math.abs(b-(i.radio_bw||0))<0.05);
+  if(bw==null && i.radio_bw){ $('sf-bw').insertAdjacentHTML('beforeend','<option value="'+i.radio_bw+'">'+i.radio_bw+'</option>'); }
+  $('sf-bw').value=bw??i.radio_bw??125;
+  $('sf-sf').value=i.radio_sf??10; $('sf-cr').value=i.radio_cr??5;
+  $('sf-tx').value=i.tx_power??''; $('sf-tx').max=i.max_tx_power||30;
+  $('sf-txmax').textContent=i.max_tx_power?('(max '+i.max_tx_power+')'):'';
+  const hasRepeat=(dv.repeat!==undefined);
+  $('sf-repeat-box').hidden=!hasRepeat;
+  if(hasRepeat){
+    $('sf-repeat').checked=!!dv.repeat;
+    const fr=(s.repeat_freqs||[]).map(f=>(f.min===f.max?(f.min/1000):((f.min/1000)+'–'+(f.max/1000)))+' MHz').join(', ');
+    $('sf-repeat-hint').textContent='Il firmware la accetta solo su frequenze consentite'+(fr?(': '+fr):'')+'.';
+  }
+  // identità
+  $('sf-name').value=i.name||'';
+  $('sf-lat').value=i.adv_lat??''; $('sf-lon').value=i.adv_lon??'';
+  $('sf-advloc').checked=!!i.adv_loc_policy;
+  // contatti
+  const aa=(s.autoadd&&s.autoadd.config)||0;
+  $('sf-overwrite').checked=!!(aa&AA.overwrite);
+  $('sf-aa-chat').checked=!!(aa&AA.chat); $('sf-aa-rpt').checked=!!(aa&AA.rpt);
+  $('sf-aa-room').checked=!!(aa&AA.room); $('sf-aa-sens').checked=!!(aa&AA.sens);
+  $('sf-aa-hops').value=(s.autoadd&&s.autoadd.max_hops!=null)?s.autoadd.max_hops:0;
+  $('sf-add-sel').checked=!!i.manual_add_contacts; $('sf-add-all').checked=!i.manual_add_contacts;
+  $('sf-maxc').textContent=dv.max_contacts||350;
+  syncAddMode();
+  // avanzate
+  $('sf-rxd').value=s.tuning?s.tuning.rx_delay:''; $('sf-af').value=s.tuning?s.tuning.af:'';
+  $('sf-phm').value=dv.path_hash_mode??0;
+  $('sf-multiack').checked=!!i.multi_acks;
+  // variabili del firmware
+  const vars=s.custom_vars||{}, ve=$('self-vars');
+  const keys=Object.keys(vars);
+  ve.innerHTML = keys.length ? '<div class="form" style="grid-template-columns:1fr 1fr"></div>'
+                             : '<div class="empty">Il firmware non espone variabili.</div>';
+  keys.forEach(k=>{
+    const f=document.createElement('div'); f.className='fld';
+    f.innerHTML='<label></label><input class="inp" data-var="">';
+    f.querySelector('label').textContent=k;
+    const inp=f.querySelector('input'); inp.dataset.var=k; inp.value=vars[k];
+    ve.firstChild.appendChild(f);
+  });
+  // statistiche
+  const c=(s.stats&&s.stats.core)||{}, r=(s.stats&&s.stats.radio)||{}, p=(s.stats&&s.stats.packets)||{};
+  $('self-stats').innerHTML=
+    kvRow('Uptime', fmtDur(c.uptime_secs))+
+    kvRow('Coda TX', c.queue_len)+
+    kvRow('Errori', c.errors)+
+    kvRow('Rumore di fondo', r.noise_floor!=null?r.noise_floor+' dBm':null)+
+    kvRow('Ultimo RSSI', r.last_rssi!=null?r.last_rssi+' dBm':null)+
+    kvRow('Ultimo SNR', r.last_snr!=null?r.last_snr+' dB':null)+
+    kvRow('Airtime TX / RX', (r.tx_air_secs!=null)?(fmtDur(r.tx_air_secs)+' / '+fmtDur(r.rx_air_secs)):null)+
+    kvRow('Pacchetti ric. / inv.', both(p.recv, p.sent))+
+    kvRow('Flood ric. / inv.', both(p.flood_rx, p.flood_tx))+
+    kvRow('Diretti ric. / inv.', both(p.direct_rx, p.direct_tx))+
+    kvRow('Errori di ricezione', p.recv_errors)
+    || '<div class="empty">Nessun dato.</div>';
+}
+const numVal=id=>{ const v=$(id).value.trim(); return v===''?null:Number(v); };
+// Modifiche di ciascun gruppo (una card = un "Salva").
+const SELF_GROUPS={
+  telemetry(){ return {telemetry_mode_base:+$('sf-tm-base').value, telemetry_mode_loc:+$('sf-tm-loc').value,
+                       telemetry_mode_env:+$('sf-tm-env').value}; },
+  radio(){
+    const i=selfState.info||{};
+    const ch={}, radio={freq:numVal('sf-freq'), bw:+$('sf-bw').value, sf:+$('sf-sf').value, cr:+$('sf-cr').value,
+      repeat: $('sf-repeat-box').hidden ? null : $('sf-repeat').checked};
+    const changed = radio.freq!==i.radio_freq || Math.abs(radio.bw-(i.radio_bw||0))>0.05 || radio.sf!==i.radio_sf
+      || radio.cr!==i.radio_cr || (radio.repeat!=null && radio.repeat!==!!(selfState.device||{}).repeat);
+    if(changed){
+      if(radio.freq==null) throw new Error('indica la frequenza');
+      if(!confirm('Cambiare i parametri radio in '+radio.freq+' MHz · BW '+radio.bw+' kHz · SF'+radio.sf+' · CR 4/'+radio.cr+
+        (radio.repeat!=null?(' · ripetizione '+(radio.repeat?'ON':'OFF')):'')+
+        '?\n\nSe non sono uguali a quelli della rete, il nodo smetterà di sentire gli altri (ma resterà raggiungibile da qui via WiFi).')) return null;
+      ch.radio=radio;
+    }
+    const tx=numVal('sf-tx');
+    if(tx!=null && tx!==i.tx_power) ch.tx_power=tx;
+    return ch;
+  },
+  identity(){
+    const i=selfState.info||{}, ch={};
+    const name=$('sf-name').value.trim();
+    if(name && name!==i.name) ch.name=name;
+    const lat=numVal('sf-lat'), lon=numVal('sf-lon');
+    if(lat!=null && lon!=null && (lat!==i.adv_lat || lon!==i.adv_lon)){ ch.lat=lat; ch.lon=lon; }
+    ch.adv_loc_policy=$('sf-advloc').checked?1:0;
+    return ch;
+  },
+  contacts(){
+    let cfg=0;
+    if($('sf-overwrite').checked) cfg|=AA.overwrite;
+    if($('sf-aa-chat').checked) cfg|=AA.chat;
+    if($('sf-aa-rpt').checked) cfg|=AA.rpt;
+    if($('sf-aa-room').checked) cfg|=AA.room;
+    if($('sf-aa-sens').checked) cfg|=AA.sens;
+    return {manual_add_contacts:$('sf-add-sel').checked, autoadd:{config:cfg, max_hops:numVal('sf-aa-hops')||0}};
+  },
+  advanced(){
+    const ch={multi_acks:$('sf-multiack').checked?1:0};
+    const rx=numVal('sf-rxd'), af=numVal('sf-af');
+    if(rx!=null && af!=null) ch.tuning={rx_delay:rx, af:af};
+    const phm=+$('sf-phm').value;
+    if(phm!==((selfState.device||{}).path_hash_mode??0)){
+      if(!confirm('Cambiare la dimensione dell\'hash del percorso?\n\nI nodi con firmware vecchio potrebbero non instradare correttamente i pacchetti con hash più lunghi di 1 byte.')) return null;
+      ch.path_hash_mode=phm;
+    }
+    return ch;
+  },
+  vars(){
+    const cv={}, old=selfState.custom_vars||{};
+    document.querySelectorAll('#self-vars input[data-var]').forEach(inp=>{
+      if(inp.value.trim()!==String(old[inp.dataset.var])) cv[inp.dataset.var]=inp.value.trim();
+    });
+    return Object.keys(cv).length ? {custom_vars:cv} : {};
+  },
+};
+async function selfSave(group, btn){
+  const st=$('self-status');
+  if(!selfState){ st.textContent='Leggi prima la configurazione dal nodo.'; return; }
+  let ch;
+  try{ ch=SELF_GROUPS[group](); }catch(e){ st.textContent='✗ '+e.message; return; }
+  if(ch==null) return;   // annullato dall'utente
+  if(!Object.keys(ch).length){ st.textContent='Nessuna modifica da salvare.'; return; }
+  btn.disabled=true; st.textContent='Invio delle modifiche al nodo…';
+  try{
+    const r=await selfRun('set',{changes:ch});
+    const ap=r.applied||{};
+    const bad=Object.entries(ap).filter(([k,v])=>v!=='ok');
+    st.textContent = bad.length
+      ? '✗ Non applicato: '+bad.map(([k,v])=>(APPLIED_LBL[k]||k)+' ('+v+')').join(', ')
+      : '✓ Salvato sul nodo: '+Object.keys(ap).map(k=>APPLIED_LBL[k]||k).join(', ')+'.';
+    if(r.state) renderSelf(r.state);
+  }catch(e){ st.textContent='✗ '+e.message; }
+  finally{ btn.disabled=false; }
+}
+async function selfTimeSync(btn){
+  const st=$('self-status');
+  btn.disabled=true; st.textContent='Sincronizzazione orologio…';
+  try{ await selfRun('time_sync'); st.textContent='✓ Orologio del nodo allineato al Raspberry.'; await selfRead(); }
+  catch(e){ st.textContent='✗ '+e.message; }
+  finally{ btn.disabled=false; }
+}
+async function selfReboot(btn){
+  if(!confirm('Riavviare il nodo?\n\nPer circa un minuto non arriveranno dati né messaggi: il logger si ricollega da solo appena il nodo torna in rete.')) return;
+  const st=$('self-status');
+  btn.disabled=true;
+  try{ await selfRun('reboot'); st.textContent='✓ Riavvio inviato. Il logger si ricollegherà da solo: premi "Rileggi" tra un minuto o due.'; }
+  catch(e){ st.textContent='✗ '+e.message; }
+  finally{ btn.disabled=false; }
+}
+function initSelf(){
+  initSelfForm();
+  $('self-refresh').addEventListener('click', selfRead);
+  $('self-reboot').addEventListener('click', e=>selfReboot(e.currentTarget));
+  $('self-timesync').addEventListener('click', e=>selfTimeSync(e.currentTarget));
+  document.querySelectorAll('[data-self-save]').forEach(b=>b.addEventListener('click',()=>selfSave(b.dataset.selfSave, b)));
+}
+
 let msgTimer=null;
 function initTabs(){
   document.getElementById('tabs').addEventListener('click', e=>{
@@ -1462,7 +1821,9 @@ function initTabs(){
     document.getElementById('tab-messages').hidden = (tab!=='messages');
     document.getElementById('tab-map').hidden      = (tab!=='map');
     document.getElementById('tab-net').hidden      = (tab!=='net');
+    document.getElementById('tab-self').hidden     = (tab!=='self');
     document.getElementById('tab-rpt').hidden      = true;
+    if(tab==='self') openSelf();
     if(tab==='net'){ loadNet(); if(!netTimer) netTimer=setInterval(()=>{ if(!document.getElementById('tab-net').hidden){ loadCmdLog(); } }, 5000); }
     if(tab==='messages'){
       loadChannels()
@@ -1500,6 +1861,7 @@ function initTabs(){
   document.getElementById('node-modal').addEventListener('click', e=>{ if(e.target.id==='node-modal') closeNodeInfo(); });
   document.addEventListener('keydown', e=>{ if(e.key==='Escape'){ closeNodeInfo(); closeRptLogin(); } });
   initRpt();
+  initSelf();
   document.getElementById('advert-btn').addEventListener('click', doAdvert);
   document.getElementById('autoadv-save').addEventListener('click', saveMcConfig);
   document.getElementById('prune-btn').addEventListener('click', doPrune);

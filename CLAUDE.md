@@ -95,6 +95,7 @@ Tutti (tranne meshlogger) `enabled` → ripartono al boot. Token ngrok in `~/.co
 | `POST /api/mc/prune` | `{days}` → accoda la pulizia della rubrica del nodo (rimuove i contatti non visti da N giorni) |
 | `POST /api/mc/rpt` | gestione remota ripetitore/room: `{node_id, op, password?, cmd?}`, op = `login`(password) · `logout` · `status` · `telemetry` · `neighbours` · `acl` · `owner` · `regions` · `cli`(cmd) → `{queued, id}` |
 | `GET /api/mc/cmd?id=N` | esito di un singolo comando in coda (polling); le password non vengono mai restituite |
+| `GET\|POST /api/mc/self` | **nodo locale** (companion collegato al Pi). GET → `{state}` = ultima lettura salvata (meta `self_state`); POST `{op}`: `read` · `set` (`changes`: name, lat/lon, tx_power, radio{freq,bw,sf,cr,repeat}, tuning{rx_delay,af}, telemetry_mode_base/loc/env, adv_loc_policy, multi_acks, manual_add_contacts, autoadd{config,max_hops}, path_hash_mode, custom_vars) · `time_sync` · `reboot` → `{queued, id}` |
 | `GET\|POST /api/mc/config` | legge/imposta `{auto_advert_min, auto_prune_days}`; in lettura riporta anche `contacts_count`/`max_contacts` |
 
 Per accesso via ngrok aggiungere header `ngrok-skip-browser-warning: true` (evita l'interstitial free).
@@ -125,6 +126,14 @@ Per accesso via ngrok aggiungere header `ngrok-skip-browser-warning: true` (evit
   (nome, repeat, lat/lon, tx, radio, advert.interval, flood.advert.interval, flood.max, af, delay,
   owner.info, guest.password) e **console CLI** libera. La password resta solo in memoria nella pagina
   (serve per il tasto "Login" di rinnovo sessione); le operazioni partono in fila, una alla volta.
+- **📻 Il mio nodo**: configurazione del nodo a cui il Pi è collegato via WiFi (azione `self`, nessun
+  passaggio sulla mesh → risposte in 1-2 s). Dispositivo (modello, firmware, batteria, memoria, orologio
+  con scarto rispetto al Pi + **sincronizza**), telemetria attuale (LPP), **condivisione telemetria**
+  (base/posizione/ambiente: negata · solo contatti autorizzati · tutti), **radio** (freq, BW, SF, CR,
+  potenza TX, ripetizione del companion), nome/posizione/posizione negli advert, **contatti** (aggiunta
+  automatica per tipo, max salti, **sovrascrivi il più vecchio a rubrica piena**), avanzate (rx delay,
+  airtime factor, hash percorso 1-3 byte, ACK multipli), variabili del firmware, statistiche, riavvio.
+  Ogni card ha il suo "Salva" e manda solo il proprio gruppo; l'esito è riportato per voce.
 - Tema chiaro/scuro; chiave API salvata in localStorage (tasto 🔑).
 
 ---
@@ -203,6 +212,20 @@ simulato: da confermare il formato delle risposte `get` (`"> valore"`) e i param
 `/api/mc/...`, (d) UI nella tab Rete. Esempi facili: telemetria periodica a un nodo, path-discovery
 schedulato, richiesta stato ai ripetitori.
 
+### Configurazione del nodo locale (azione `self`, `self_read`/`self_set`)
+- `send_appstart()` restituisce il SELF_INFO: tx_power/max, lat/lon, radio (freq MHz, bw kHz, sf, cr),
+  `telemetry_mode_base/loc/env` (0=negata, 1=solo contatti con permesso, 2=tutti), `adv_loc_policy`,
+  `multi_acks`, `manual_add_contacts`. `send_device_query()` aggiunge modello, versione, `repeat`, `path_hash_mode`.
+- Telemetria/advert-loc/multi_acks/manual_add viaggiano in **un solo comando** (`set_other_params_from_infos`):
+  si parte dai valori attuali (appstart) e si cambiano solo le chiavi richieste.
+- Tuning (rx_delay, airtime factor): il firmware li scambia **×1000** (lettura e scrittura).
+- `autoadd_config` = bitmask: bit0 **sovrascrivi il più vecchio a rubrica piena**, bit1 client, bit2
+  ripetitori, bit3 room, bit4 sensori (i tipi contano solo con `manual_add_contacts`). La libreria non
+  manda `max_hops` → il frame `0x3A config max_hops` è scritto a mano.
+- `set_radio` vale subito (niente riavvio); `repeat` è accettato solo sulle frequenze di
+  `get_allowed_repeat_freq` (su questo nodo 433 / 869.495 / 918 MHz). TX: da −9 a `max_tx_power` (22).
+- `reboot()` non ha risposta: la connessione cade e il logger si ricollega da solo.
+
 ### Robustezza connessione (anti-blocco)
 Sintomo tipico: servizio `active` ma **offline** (nessun `SAVED`), senza errori nei log.
 Causa: **TCP half-open** — il nodo riavvia/perde il WiFi senza chiudere il socket, `is_connected`
@@ -264,6 +287,11 @@ sul Pi) e liberata la rubrica del nodo, piena a 350/350: rimossi 153 contatti in
 `/home/pi/meshlogger/bak-2026-09-23/`). Provato dal vivo su RPT_MONTE_PIAN (6 km, in flood):
 owner, regioni e **status rispondono in ~3 s anche senza login**. Login e comandi CLI (`get`/`set`)
 restano da provare con una password di un ripetitore.
+
+**Deploy 2026-09-24** della pagina "📻 Il mio nodo" (backup in `/home/pi/meshlogger/bak-2026-09-24/`).
+Lettura provata dal vivo sul nodo MALO: telemetria già condivisa con **tutti** (2/2/2), posizione NON
+negli advert, `autoadd_config=0` (sovrascrittura a rubrica piena spenta), orologio indietro di ~60 s.
+Le scritture sono provate solo con nodo simulato.
 
 **Possibili prossimi passi:** batteria/SNR/env per nodo sulla mappa; notifica/badge sui DM non letti;
 attivare la pulizia rubrica automatica (`auto_prune_days`) per non tornare a rubrica piena.
