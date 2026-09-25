@@ -95,7 +95,7 @@ Tutti (tranne meshlogger) `enabled` → ripartono al boot. Token ngrok in `~/.co
 | `POST /api/mc/prune` | `{days}` → accoda la pulizia della rubrica del nodo (rimuove i contatti non visti da N giorni) |
 | `POST /api/mc/rpt` | gestione remota ripetitore/room: `{node_id, op, password?, cmd?}`, op = `login`(password) · `logout` · `status` · `telemetry` · `neighbours` · `acl` · `owner` · `regions` · `cli`(cmd) → `{queued, id}` |
 | `GET /api/mc/cmd?id=N` | esito di un singolo comando in coda (polling); le password non vengono mai restituite |
-| `GET\|POST /api/mc/self` | **nodo locale** (companion collegato al Pi). GET → `{state}` = ultima lettura salvata (meta `self_state`); POST `{op}`: `read` · `set` (`changes`: name, lat/lon, tx_power, radio{freq,bw,sf,cr,repeat}, tuning{rx_delay,af}, telemetry_mode_base/loc/env, adv_loc_policy, multi_acks, manual_add_contacts, autoadd{config,max_hops}, path_hash_mode, custom_vars) · `time_sync` · `reboot` → `{queued, id}` |
+| `GET\|POST /api/mc/self` | **nodo locale** (companion collegato al Pi). GET → `{state}` = ultima lettura salvata (meta `self_state`); POST `{op}`: `read` · `set` (`changes`: name, lat/lon, tx_power, radio{freq,bw,sf,cr,repeat}, tuning{rx_delay,af}, telemetry_mode_base/loc/env, adv_loc_policy, multi_acks, manual_add_contacts, autoadd{config,max_hops}, path_hash_mode, custom_vars) · `time_sync` · `reboot` · `cli` (`cmd`: comando della console, vedi §7) → `{queued, id}`; GET riporta anche `echo` = ultimo advert proprio risentito (meta `self_adv_echo`) |
 | `GET\|POST /api/mc/config` | legge/imposta `{auto_advert_min, auto_prune_days}`; in lettura riporta anche `contacts_count`/`max_contacts` |
 
 Per accesso via ngrok aggiungere header `ngrok-skip-browser-warning: true` (evita l'interstitial free).
@@ -134,6 +134,8 @@ Per accesso via ngrok aggiungere header `ngrok-skip-browser-warning: true` (evit
   automatica per tipo, max salti, **sovrascrivi il più vecchio a rubrica piena**), avanzate (rx delay,
   airtime factor, hash percorso 1-3 byte, ACK multipli), variabili del firmware, statistiche, riavvio.
   Ogni card ha il suo "Salva" e manda solo il proprio gruppo; l'esito è riportato per voce.
+  In fondo c'è una **console** a comandi testuali (con `advcheck` per verificare cosa contiene l'advert
+  in onda); sotto la posizione è mostrato l'ultimo advert proprio risentito dalla rete.
 - Tema chiaro/scuro; chiave API salvata in localStorage (tasto 🔑).
 
 ---
@@ -225,6 +227,14 @@ schedulato, richiesta stato ai ripetitori.
 - `set_radio` vale subito (niente riavvio); `repeat` è accettato solo sulle frequenze di
   `get_allowed_repeat_freq` (su questo nodo 433 / 869.495 / 918 MHz). TX: da −9 a `max_tx_power` (22).
 - `reboot()` non ha risposta: la connessione cade e il logger si ricollega da solo.
+- **Console** (`self_cli`, op `cli`): il companion NON ha una CLI testuale, quindi i comandi (`info`, `get/set …`,
+  `advert`, `advcheck`, `echo`, `clock`, `contacts`, `stats`, `help`…) sono tradotti in chiamate della libreria.
+- **Eco degli advert**: `on_rx_log` riconosce negli RX log gli `ADVERT` con la nostra chiave (ritrasmessi da un
+  ripetitore) e salva cosa è andato davvero in onda (posizione sì/no, salti) in meta `self_adv_echo`.
+  `advcheck` = advert flood + 30 s di ascolto. Il firmware mette lat/lon in ogni advert se `adv_loc_policy≠0`.
+  Verificato il 2026-09-25: l'advert di MALO esce **con** la posizione (eco dal ripetitore `1be8`, 1 salto).
+- L'auto-advert del logger è **zero-hop** (lo sentono solo i vicini diretti): i nodi lontani aggiornano
+  il contatto (e la posizione) solo con un advert **flood**.
 
 ### Robustezza connessione (anti-blocco)
 Sintomo tipico: servizio `active` ma **offline** (nessun `SAVED`), senza errori nei log.

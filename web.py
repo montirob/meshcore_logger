@@ -658,17 +658,24 @@ def mc_self():
     if request.method == "OPTIONS":
         return ("", 204)
     if request.method == "GET":
-        try:
-            row = q("SELECT value FROM meta WHERE key='self_state'")
-            state = json.loads(row[0]["value"]) if row and row[0]["value"] else None
-        except (sqlite3.Error, ValueError):
-            state = None
-        return jsonify({"state": state})
+        out = {}
+        for key, meta_key in (("state", "self_state"), ("echo", "self_adv_echo")):
+            try:
+                row = q("SELECT value FROM meta WHERE key=?", (meta_key,))
+                out[key] = json.loads(row[0]["value"]) if row and row[0]["value"] else None
+            except (sqlite3.Error, ValueError):
+                out[key] = None
+        return jsonify(out)
     data = request.get_json(silent=True) or {}
     op = data.get("op")
-    if op not in ("read", "set", "time_sync", "reboot"):
+    if op not in ("read", "set", "time_sync", "reboot", "cli"):
         return jsonify({"error": "operazione non valida"}), 400
     params = {"op": op}
+    if op == "cli":
+        cmd = (data.get("cmd") or "").strip()
+        if not cmd or len(cmd.encode("utf-8")) > 200:
+            return jsonify({"error": "comando vuoto o troppo lungo"}), 400
+        params["cmd"] = cmd
     if op == "set":
         changes, err = _check_self_changes(data.get("changes") or {})
         if err:

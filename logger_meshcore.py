@@ -242,11 +242,37 @@ def _split_name(text):
     return None, text
 
 _recent_logs = []  # RX log recenti dei messaggi di canale (GRP_TXT) per correlare il percorso
+# "Eco" dei nostri advert: quando un ripetitore ritrasmette il nostro advert e il nodo
+# lo risente, l'RX log mostra cosa è andato davvero in onda (posizione sì/no, salti).
+_self_pk = ""       # chiave pubblica del nodo locale (hex minuscolo), nota dopo la connessione
+_adv_echoes = []    # ultimi advert propri risentiti
+
+def _on_self_advert(pl):
+    e = {"t": int(time.time()), "has_loc": pl.get("adv_lat") is not None,
+         "lat": pl.get("adv_lat"), "lon": pl.get("adv_lon"), "name": pl.get("adv_name"),
+         "adv_ts": pl.get("adv_timestamp"), "hops": pl.get("path_len"), "path": pl.get("path"),
+         "route": pl.get("route_typename"), "snr": pl.get("snr"), "rssi": pl.get("rssi")}
+    _adv_echoes.append(e)
+    del _adv_echoes[:-20]
+    try:
+        con = sqlite3.connect(DB)
+        con.execute("PRAGMA busy_timeout=8000")
+        con.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('self_adv_echo',?)", (json.dumps(e),))
+        con.commit(); con.close()
+    except Exception:
+        pass
+    log(f"ECO advert proprio: posizione={'sì' if e['has_loc'] else 'NO'} {e['lat']},{e['lon']} salti={e['hops']}")
 
 def on_rx_log(ev):
     try:
         pl = getattr(ev, "payload", None) or {}
-        if not isinstance(pl, dict) or pl.get("payload_typename") != "GRP_TXT":
+        if not isinstance(pl, dict):
+            return
+        if pl.get("payload_typename") == "ADVERT":
+            if _self_pk and (pl.get("adv_key") or "").lower() == _self_pk:
+                _on_self_advert(pl)
+            return
+        if pl.get("payload_typename") != "GRP_TXT":
             return
         _recent_logs.append({"t": time.time(), "path": pl.get("path"),
                              "snr": pl.get("snr"), "path_len": pl.get("path_len"), "used": False})
@@ -641,8 +667,207 @@ async def self_set(mc, con, ch):
     log(f"nodo locale: modifiche {applied}")
     return {"applied": applied, "state": await self_read(mc, con)}
 
+# ---------------- Console del nodo locale ----------------
+# Il companion non ha una CLI testuale (parla solo il protocollo binario): questi
+# comandi sono tradotti nelle chiamate della libreria.
+SELF_CLI_HELP = """comandi:
+  info                   nome, chiave, posizione, radio, opzioni
+  ver                    modello e firmware
+  bat                    batteria e memoria
+  clock [sync]           orologio del nodo (sync = allinea al Raspberry)
+  tele                   telemetria del nodo (LPP)
+  stats                  statistiche core / radio / pacchetti
+  contacts [testo]       contatti in rubrica (filtrati per nome)
+  advert [flood]         invia un advert (zero-hop, oppure flood)
+  advcheck               advert flood + ascolto dell'eco: mostra cosa è andato in onda
+  echo                   ultimi advert propri risentiti dalla rete
+  get <chiave>           name · coords · advloc · tx · radio · telemetry · autoadd · tuning · vars · phm · multiacks
+  set name <nome>
+  set coords <lat> <lon>
+  set advloc on|off
+  set tx <dBm>
+  set telemetry base|loc|env 0|1|2   (0 negata · 1 contatti autorizzati · 2 tutti)
+  set multiacks on|off
+  set var <nome> <valore>
+  reboot"""
+TELEM_LBL = {0: "negata", 1: "solo contatti autorizzati", 2: "tutti"}
+ADVERT_ECHO_WAIT = 30   # s di ascolto dell'eco dopo un advert flood
+
+def _onoff(v):
+    v = str(v).lower()
+    if v in ("on", "1", "si", "sì", "yes", "true"):
+        return 1
+    if v in ("off", "0", "no", "false"):
+        return 0
+    raise RuntimeError("valore atteso: on/off")
+
+def _fmt_echo(e):
+    when = datetime.datetime.fromtimestamp(e["t"]).strftime("%d/%m %H:%M:%S")
+    pos = f"posizione {e['lat']}, {e['lon']}" if e.get("has_loc") else "SENZA posizione"
+    return (f"{when}  {pos} · nome {e.get('name') or '—'} · salti {e.get('hops')}"
+            f"{' (' + e['path'] + ')' if e.get('path') else ''} · SNR {e.get('snr')}")
+
+def _fmt_self_info(i, dv):
+    loc = "sì" if i.get("adv_loc_policy") else "NO"
+    return "\n".join([
+        f"nome        {i.get('name')}",
+        f"chiave      {i.get('public_key')}",
+        f"posizione   {i.get('adv_lat')}, {i.get('adv_lon')}   (negli advert: {loc}, policy={i.get('adv_loc_policy')})",
+        f"radio       {i.get('radio_freq')} MHz · BW {i.get('radio_bw')} kHz · SF{i.get('radio_sf')} · CR 4/{i.get('radio_cr')}"
+        f" · TX {i.get('tx_power')}/{i.get('max_tx_power')} dBm",
+        "telemetria  " + " · ".join(f"{k} {TELEM_LBL.get(i.get('telemetry_mode_' + k), i.get('telemetry_mode_' + k))}"
+                                    for k in ("base", "loc", "env")),
+        f"contatti    aggiunta {'manuale/per tipo' if i.get('manual_add_contacts') else 'automatica'} · multi-ACK {i.get('multi_acks')}",
+        f"firmware    {dv.get('model')} {dv.get('ver')} ({dv.get('fw_build')}) · repeat {dv.get('repeat')} · hash percorso {dv.get('path_hash_mode')}",
+    ])
+
+async def self_cli(mc, con, line):
+    """Esegue un comando della console del nodo locale. Ritorna {reply, state?}
+    (state quando il comando ha cambiato la configurazione)."""
+    global _self_pk
+    c = mc.commands
+    args = line.split()
+    if not args:
+        raise RuntimeError("comando vuoto")
+    cmd, rest = args[0].lower(), args[1:]
+
+    if cmd in ("help", "?", "aiuto"):
+        return {"reply": SELF_CLI_HELP}
+    if cmd == "info":
+        i = await _ask(c.send_appstart) or {}
+        dv = await _ask(c.send_device_query) or {}
+        _self_pk = (i.get("public_key") or _self_pk).lower()
+        return {"reply": _fmt_self_info(i, dv)}
+    if cmd == "ver":
+        dv = await _ask(c.send_device_query) or {}
+        return {"reply": "\n".join(f"{k}: {v}" for k, v in dv.items())}
+    if cmd == "bat":
+        b = await _ask(c.get_bat) or {}
+        return {"reply": f"batteria {b.get('level', 0) / 1000:.2f} V · memoria {b.get('used_kb')}/{b.get('total_kb')} kB"}
+    if cmd == "clock":
+        if rest[:1] == ["sync"]:
+            await self_action(mc, con, {"op": "time_sync"})
+        t = await _ask(c.get_time) or {}
+        node, now = t.get("time"), int(time.time())
+        if not node:
+            return {"reply": "orologio non disponibile"}
+        return {"reply": f"nodo {datetime.datetime.fromtimestamp(node)} · Raspberry {datetime.datetime.fromtimestamp(now)}"
+                         f" · scarto {node - now:+d} s"}
+    if cmd in ("tele", "telemetry"):
+        tel = await _ask(c.get_self_telemetry)
+        items = _lpp_items(tel) if tel else []
+        return {"reply": "\n".join(f"ch{x.get('channel')} {x.get('type')}: {x.get('value')}" for x in items) or "nessuna telemetria"}
+    if cmd == "stats":
+        out = []
+        for name, fn in (("core", c.get_stats_core), ("radio", c.get_stats_radio), ("pacchetti", c.get_stats_packets)):
+            s = await _ask(fn) or {}
+            out.append(name + ": " + " · ".join(f"{k} {v}" for k, v in s.items()))
+        return {"reply": "\n".join(out)}
+    if cmd == "contacts":
+        await asyncio.wait_for(_maybe(c.get_contacts()), CALL_TIMEOUT)
+        cs = [v for v in (getattr(mc, "contacts", None) or {}).values() if isinstance(v, dict)]
+        dv = await _ask(c.send_device_query) or {}
+        head = f"{len(cs)} contatti in rubrica (max {dv.get('max_contacts', '?')})"
+        if not rest:
+            return {"reply": head}
+        q = " ".join(rest).lower()
+        hit = [v for v in cs if q in (v.get("adv_name") or "").lower()][:30]
+        rows = [f"{(v.get('public_key') or '')[:12]}  {v.get('adv_name')}  tipo {v.get('type')}"
+                f"  pos {v.get('adv_lat')},{v.get('adv_lon')}  ultimo advert "
+                f"{datetime.datetime.fromtimestamp(v['last_advert']) if v.get('last_advert') else '—'}" for v in hit]
+        return {"reply": head + "\n" + ("\n".join(rows) or "nessun contatto con quel nome")}
+    if cmd == "advert":
+        flood = rest[:1] == ["flood"]
+        await asyncio.wait_for(_maybe(c.send_advert(flood=flood)), CALL_TIMEOUT)
+        return {"reply": f"advert {'flood' if flood else 'zero-hop'} inviato"}
+    if cmd == "advcheck":
+        i = await _ask(c.send_appstart) or {}
+        _self_pk = (i.get("public_key") or _self_pk).lower()
+        pre = (f"impostazione: posizione negli advert {'SÌ' if i.get('adv_loc_policy') else 'NO'}"
+               f" · coordinate {i.get('adv_lat')}, {i.get('adv_lon')}")
+        t0 = time.time()
+        await asyncio.wait_for(_maybe(c.send_advert(flood=True)), CALL_TIMEOUT)
+        first = None
+        while time.time() - t0 < ADVERT_ECHO_WAIT:
+            got = [e for e in _adv_echoes if e["t"] >= int(t0)]
+            if got and first is None:
+                first = time.time()
+            if first and time.time() - first > 4:   # qualche secondo per altre ritrasmissioni
+                break
+            await asyncio.sleep(0.5)
+        got = [e for e in _adv_echoes if e["t"] >= int(t0)]
+        if not got:
+            return {"reply": pre + f"\nadvert flood inviato; nessuna ritrasmissione sentita in {ADVERT_ECHO_WAIT} s"
+                                   " (nessun ripetitore in portata l'ha ripetuto, o non l'abbiamo risentito)"}
+        return {"reply": pre + f"\nadvert flood inviato; sentite {len(got)} ritrasmissioni:\n" +
+                         "\n".join(_fmt_echo(e) for e in got)}
+    if cmd == "echo":
+        if not _adv_echoes:
+            row = con.execute("SELECT value FROM meta WHERE key='self_adv_echo'").fetchone()
+            if row and row[0]:
+                return {"reply": "ultimo advert proprio risentito:\n" + _fmt_echo(json.loads(row[0]))}
+            return {"reply": "nessun advert proprio risentito finora (prova: advcheck)"}
+        return {"reply": "\n".join(_fmt_echo(e) for e in _adv_echoes)}
+    if cmd == "get":
+        if not rest:
+            raise RuntimeError("uso: get <chiave>")
+        k = rest[0].lower()
+        i = await _ask(c.send_appstart) or {}
+        if k == "name":           return {"reply": str(i.get("name"))}
+        if k in ("coords", "lat", "lon"): return {"reply": f"{i.get('adv_lat')} {i.get('adv_lon')}"}
+        if k == "advloc":         return {"reply": f"{'on' if i.get('adv_loc_policy') else 'off'} (policy={i.get('adv_loc_policy')})"}
+        if k == "tx":             return {"reply": f"{i.get('tx_power')} dBm (max {i.get('max_tx_power')})"}
+        if k == "radio":          return {"reply": f"{i.get('radio_freq')} MHz · BW {i.get('radio_bw')} · SF{i.get('radio_sf')} · CR 4/{i.get('radio_cr')}"}
+        if k == "telemetry":      return {"reply": " · ".join(f"{m} {i.get('telemetry_mode_' + m)}" for m in ("base", "loc", "env"))}
+        if k == "multiacks":      return {"reply": str(i.get("multi_acks"))}
+        if k == "autoadd":        return {"reply": json.dumps(await _ask(c.get_autoadd_config))}
+        if k == "tuning":
+            t = await _ask(c.get_tuning) or {}
+            return {"reply": f"rx_delay {t.get('rx_delay', 0) / 1000} · airtime factor {t.get('airtime_factor', 0) / 1000}"}
+        if k == "vars":           return {"reply": json.dumps(await _ask(c.get_custom_vars) or {}) }
+        if k == "phm":
+            dv = await _ask(c.send_device_query) or {}
+            return {"reply": str(dv.get("path_hash_mode"))}
+        raise RuntimeError("chiave sconosciuta: " + k)
+    if cmd == "set":
+        if len(rest) < 2:
+            raise RuntimeError("uso: set <chiave> <valore> (help per l'elenco)")
+        k, v = rest[0].lower(), rest[1:]
+        try:
+            if k == "name":
+                ch = {"name": " ".join(v)}
+            elif k == "coords":
+                lat, lon = float(v[0].rstrip(",")), float(v[1])
+                if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                    raise RuntimeError("coordinate fuori range")
+                ch = {"lat": lat, "lon": lon}
+            elif k == "advloc":
+                ch = {"adv_loc_policy": _onoff(v[0])}
+            elif k == "tx":
+                ch = {"tx_power": int(v[0])}
+            elif k == "telemetry":
+                m, val = v[0].lower(), int(v[1])
+                if m not in ("base", "loc", "env") or val not in (0, 1, 2):
+                    raise RuntimeError("uso: set telemetry base|loc|env 0|1|2")
+                ch = {"telemetry_mode_" + m: val}
+            elif k == "multiacks":
+                ch = {"multi_acks": _onoff(v[0])}
+            elif k == "var":
+                ch = {"custom_vars": {v[0]: " ".join(v[1:])}}
+            else:
+                raise RuntimeError("chiave non modificabile da console: " + k)
+        except (ValueError, IndexError):
+            raise RuntimeError("valore non valido")
+        r = await self_set(mc, con, ch)
+        return {"reply": " · ".join(f"{a}: {b}" for a, b in r["applied"].items()), "state": r["state"]}
+    if cmd == "reboot":
+        return dict(await self_action(mc, con, {"op": "reboot"}), reply="riavvio inviato: il logger si ricollega da solo")
+    raise RuntimeError(f"comando sconosciuto: {cmd} (scrivi help)")
+
 async def self_action(mc, con, params):
     op = params.get("op")
+    if op == "cli":
+        return dict(await self_cli(mc, con, str(params.get("cmd") or "").strip()), op=op)
     if op == "read":
         return {"op": op, "state": await self_read(mc, con)}
     if op == "set":
@@ -902,6 +1127,7 @@ async def idle_until(mc, con, myname, deadline):
         await asyncio.sleep(1)
 
 async def main():
+    global _self_pk
     con = init_db()
     log(f"logger MeshCore avviato: conn={CONN} sensor={SENSOR} interval={INTERVAL}s")
     asyncio.create_task(_watchdog())
@@ -928,6 +1154,7 @@ async def main():
                 try:
                     si = getattr(mc, "self_info", None) or {}
                     myname = si.get("name") or myname
+                    _self_pk = (si.get("public_key") or "").lower()
                 except Exception:
                     pass
                 try:   # limite di rubrica del firmware: serve a segnalare quando è piena

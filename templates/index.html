@@ -485,6 +485,7 @@
         <div class="fld"><label for="sf-lon">Longitudine</label><input id="sf-lon" class="inp" type="number" step="0.000001" min="-180" max="180"></div>
       </div>
       <label class="chk"><input type="checkbox" id="sf-advloc"> Includi la posizione negli advert (il nodo compare sulle mappe degli altri)</label>
+      <div class="hint" id="self-echo" style="margin-top:6px"></div>
     </div>
 
     <div class="card">
@@ -527,6 +528,23 @@
     <div class="card">
       <h2>📈 Statistiche</h2>
       <div id="self-stats" class="kv"><div class="empty">—</div></div>
+    </div>
+
+    <div class="card">
+      <h2>⌨️ Console <button class="btn" id="self-console-clear">Pulisci</button></h2>
+      <div class="actions" style="margin:0 0 8px">
+        <button class="btn" data-self-cli="info">info</button>
+        <button class="btn" data-self-cli="advcheck">📡 advcheck (verifica advert)</button>
+        <button class="btn" data-self-cli="echo">echo</button>
+        <button class="btn" data-self-cli="clock">clock</button>
+        <button class="btn" data-self-cli="help">help</button>
+      </div>
+      <div class="console" id="self-console"></div>
+      <div class="sendrow">
+        <input id="self-cli" class="inp" style="flex:1;min-width:180px" maxlength="200" placeholder="Comando, es. info · get advloc · set advloc on · advcheck · help">
+        <button class="btn primary" id="self-cli-send">Invia</button>
+      </div>
+      <div class="hint" style="margin-top:6px">Il companion non ha una CLI propria: i comandi sono tradotti dal Raspberry nel protocollo del nodo. <code>advcheck</code> manda un advert flood e ascolta per 30 s le ritrasmissioni dei ripetitori, mostrando cosa è andato davvero in onda.</div>
     </div>
   </section>
 
@@ -1499,8 +1517,8 @@ async function rptAnon(btn){
   finally{ btn.disabled=false; }
   el.innerHTML=h||'<div class="empty">—</div>';
 }
-function consoleLine(kind, text){
-  const el=document.getElementById('rpt-console');
+function consoleLine(kind, text, id){
+  const el=document.getElementById(id||'rpt-console');
   const d=document.createElement('div'); d.className='c-'+kind; d.textContent=text;
   el.appendChild(d); el.scrollTop=el.scrollHeight;
 }
@@ -1580,7 +1598,7 @@ function initRpt(){
 // ---------------- Il mio nodo (companion collegato al Pi) ----------------
 // Letture e modifiche passano dalla coda comandi (azione `self`): il logger le
 // esegue sulla sua connessione WiFi al nodo, senza passare dalla mesh.
-const SELF_OP_LBL={read:'lettura', set:'modifica impostazioni', time_sync:'sincronizza orologio', reboot:'riavvio'};
+const SELF_OP_LBL={read:'lettura', set:'modifica impostazioni', time_sync:'sincronizza orologio', reboot:'riavvio', cli:'console'};
 const TELEM_MODES=[[0,'Negata a tutti'],[1,'Solo contatti autorizzati'],[2,'Tutti']];
 const LORA_BWS=[7.8,10.4,15.6,20.8,31.25,41.7,62.5,125,250,500];
 const AA={overwrite:1, chat:2, rpt:4, room:8, sens:16};   // bit AUTO_ADD_* del firmware
@@ -1610,8 +1628,29 @@ function syncAddMode(){
   const manual=$('sf-add-sel').checked;
   ['sf-aa-chat','sf-aa-rpt','sf-aa-room','sf-aa-sens'].forEach(id=>{ $(id).disabled=!manual; });
 }
+function renderSelfEcho(e){
+  const el=$('self-echo');
+  if(!e){ el.textContent='Nessun advert di questo nodo risentito finora dalla rete: usa "advcheck" nella console per verificare cosa va in onda.'; return; }
+  el.textContent='Ultimo advert di questo nodo ritrasmesso da un ripetitore ('+fmtDateTime(e.t*1000)+', '+e.hops+' salti): '+
+    (e.has_loc ? ('✓ con posizione '+e.lat+', '+e.lon) : '✗ SENZA posizione')+'.';
+}
+async function selfCli(cmd, btn){
+  if(/^reboot\b/i.test(cmd) && !confirm('Riavviare il nodo?')) return;
+  if(btn) btn.disabled=true;
+  consoleLine('cmd','> '+cmd,'self-console');
+  if(/^advcheck\b/i.test(cmd)) consoleLine('info','advert flood inviato, ascolto le ritrasmissioni per 30 s…','self-console');
+  try{
+    const r=await selfRun('cli',{cmd});
+    consoleLine('out', r.reply||'(nessuna risposta)','self-console');
+    if(r.state) renderSelf(r.state);
+    if(/^(advcheck|echo)\b/i.test(cmd)){
+      try{ const s=await (await apiFetch('/api/mc/self')).json(); renderSelfEcho(s.echo); }catch(e){}
+    }
+  }catch(e){ consoleLine('err', e.message,'self-console'); }
+  finally{ if(btn) btn.disabled=false; }
+}
 async function openSelf(){
-  try{ const r=await (await apiFetch('/api/mc/self')).json(); if(r.state) renderSelf(r.state); }catch(e){}
+  try{ const r=await (await apiFetch('/api/mc/self')).json(); if(r.state) renderSelf(r.state); renderSelfEcho(r.echo); }catch(e){}
   selfRead();   // la lettura dal nodo è locale e veloce: la rifaccio a ogni apertura
 }
 async function selfRead(){
@@ -1808,6 +1847,12 @@ function initSelf(){
   $('self-reboot').addEventListener('click', e=>selfReboot(e.currentTarget));
   $('self-timesync').addEventListener('click', e=>selfTimeSync(e.currentTarget));
   document.querySelectorAll('[data-self-save]').forEach(b=>b.addEventListener('click',()=>selfSave(b.dataset.selfSave, b)));
+  document.querySelectorAll('[data-self-cli]').forEach(b=>b.addEventListener('click',()=>selfCli(b.dataset.selfCli, b)));
+  $('self-console-clear').addEventListener('click', ()=>{ $('self-console').innerHTML=''; });
+  const cli=$('self-cli');
+  const send=()=>{ const c=cli.value.trim(); if(!c) return; cli.value=''; selfCli(c, $('self-cli-send')); };
+  $('self-cli-send').addEventListener('click', send);
+  cli.addEventListener('keydown', e=>{ if(e.key==='Enter') send(); });
 }
 
 let msgTimer=null;
