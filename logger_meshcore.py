@@ -689,6 +689,10 @@ SELF_CLI_HELP = """comandi:
   set telemetry base|loc|env 0|1|2   (0 negata · 1 contatti autorizzati · 2 tutti)
   set multiacks on|off
   set var <nome> <valore>
+  channels               canali configurati sul nodo e primo slot libero
+  channel add #nome      aggiunge un canale pubblico (chiave ricavata dal nome, come le app)
+  channel add <nome> <chiave hex>   aggiunge un canale privato
+  channel del <n>        libera lo slot CHn
   reboot"""
 TELEM_LBL = {0: "negata", 1: "solo contatti autorizzati", 2: "tutti"}
 ADVERT_ECHO_WAIT = 30   # s di ascolto dell'eco dopo un advert flood
@@ -720,6 +724,18 @@ def _fmt_self_info(i, dv):
         f"contatti    aggiunta {'manuale/per tipo' if i.get('manual_add_contacts') else 'automatica'} · multi-ACK {i.get('multi_acks')}",
         f"firmware    {dv.get('model')} {dv.get('ver')} ({dv.get('fw_build')}) · repeat {dv.get('repeat')} · hash percorso {dv.get('path_hash_mode')}",
     ])
+
+async def _read_channels(mc):
+    """[(idx, nome, occupato)] dei primi NUM_CHANNELS slot (quelli letti dalla dashboard)."""
+    out = []
+    for idx in range(NUM_CHANNELS):
+        pl = await _ask(lambda idx=idx: mc.commands.get_channel(idx))
+        if not isinstance(pl, dict):
+            break   # oltre il numero di canali del firmware
+        name = pl.get("channel_name") or ""
+        secret = pl.get("channel_secret") or b""
+        out.append((idx, name, bool(name) or (isinstance(secret, (bytes, bytearray)) and any(secret))))
+    return out
 
 async def self_cli(mc, con, line):
     """Esegue un comando della console del nodo locale. Ritorna {reply, state?}
@@ -860,6 +876,54 @@ async def self_cli(mc, con, line):
             raise RuntimeError("valore non valido")
         r = await self_set(mc, con, ch)
         return {"reply": " · ".join(f"{a}: {b}" for a, b in r["applied"].items()), "state": r["state"]}
+    if cmd == "channels":
+        slots = await _read_channels(mc)
+        rows = [f"CH{i}  {n or '(senza nome)'}  {'chiave ricavata dal nome' if n.startswith('#') else 'chiave impostata'}"
+                for i, n, _ in slots if _]
+        free = next((i for i, _, used in slots if not used), None)
+        return {"reply": "\n".join(rows) + f"\nprimo slot libero: {'CH' + str(free) if free is not None else 'nessuno'}"}
+    if cmd == "channel":
+        sub = rest[0].lower() if rest else ""
+        if sub == "add" and len(rest) >= 2:
+            name = rest[1]
+            if len(name.encode("utf-8")) > 31:
+                raise RuntimeError("nome troppo lungo (max 31 byte)")
+            if name.startswith("#"):
+                secret = None   # la libreria la ricava dal nome, come le app MeshCore
+            elif len(rest) >= 3:
+                try:
+                    secret = bytes.fromhex(rest[2])
+                except ValueError:
+                    raise RuntimeError("chiave non valida (servono 32 cifre esadecimali)")
+                if len(secret) != 16:
+                    raise RuntimeError("chiave non valida (servono 32 cifre esadecimali)")
+            else:
+                raise RuntimeError("canale privato: serve la chiave (channel add <nome> <chiave hex>);"
+                                   " per un canale pubblico usa il nome con # (es. #test)")
+            slots = await _read_channels(mc)
+            if any(n.lower() == name.lower() for _, n, used in slots if used):
+                raise RuntimeError(f"il canale {name} c'è già")
+            idx = next((i for i, _, used in slots if not used), None)
+            if idx is None:
+                raise RuntimeError(f"nessuno slot libero nei primi {len(slots)} canali")
+            ev = await asyncio.wait_for(_maybe(c.set_channel(idx, name, secret)), CALL_TIMEOUT)
+            if ev is None or _is_err(ev):
+                raise RuntimeError("il nodo ha rifiutato il canale")
+            await dump_channels_mc(mc, con)
+            return {"reply": f"canale {name} aggiunto su CH{idx}"}
+        if sub == "del" and len(rest) >= 2:
+            try:
+                idx = int(rest[1].lstrip("CHch"))
+            except ValueError:
+                raise RuntimeError("uso: channel del <n>")
+            if idx == 0:
+                raise RuntimeError("CH0 (Public) non si elimina da qui")
+            ev = await asyncio.wait_for(_maybe(c.set_channel(idx, "", bytes(16))), CALL_TIMEOUT)
+            if ev is None or _is_err(ev):
+                raise RuntimeError("il nodo ha rifiutato la modifica")
+            await dump_channels_mc(mc, con)
+            return {"reply": f"CH{idx} liberato"}
+        raise RuntimeError("uso: channel add #nome · channel add <nome> <chiave hex> · channel del <n>")
     if cmd == "reboot":
         return dict(await self_action(mc, con, {"op": "reboot"}), reply="riavvio inviato: il logger si ricollega da solo")
     raise RuntimeError(f"comando sconosciuto: {cmd} (scrivi help)")

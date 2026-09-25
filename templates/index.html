@@ -537,6 +537,7 @@
         <button class="btn" data-self-cli="advcheck">📡 advcheck (verifica advert)</button>
         <button class="btn" data-self-cli="echo">echo</button>
         <button class="btn" data-self-cli="clock">clock</button>
+        <button class="btn" data-self-cli="channels">channels</button>
         <button class="btn" data-self-cli="help">help</button>
       </div>
       <div class="console" id="self-console"></div>
@@ -1636,6 +1637,7 @@ function renderSelfEcho(e){
 }
 async function selfCli(cmd, btn){
   if(/^reboot\b/i.test(cmd) && !confirm('Riavviare il nodo?')) return;
+  if(/^channel\s+del\b/i.test(cmd) && !confirm('Eliminare il canale dal nodo? Non riceverai più i suoi messaggi.')) return;
   if(btn) btn.disabled=true;
   consoleLine('cmd','> '+cmd,'self-console');
   if(/^advcheck\b/i.test(cmd)) consoleLine('info','advert flood inviato, ascolto le ritrasmissioni per 30 s…','self-console');

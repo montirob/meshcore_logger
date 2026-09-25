@@ -150,7 +150,7 @@ Per accesso via ngrok aggiungere header `ngrok-skip-browser-warning: true` (evit
   **intermittente** → il logger ritenta fino a 4 volte finché arriva il canale con umidità/pressione.
 - **`is_error` è un METODO** dell'Event (va chiamato: `ev.is_error()`), non un attributo.
 - **Canali**: `commands.get_channel(idx)` → `{channel_idx, channel_name, channel_secret, channel_hash}`.
-  Attivo = nome non vuoto o secret non tutto-zero. Su questo nodo: CH0 Public, CH1 Italia, CH2 Veneto
+  Attivo = nome non vuoto o secret non tutto-zero. Su questo nodo: CH0 Public, CH1 Italia, CH2 Veneto, CH3 #test, CH4 #bot (questi due aggiunti dalla console il 2026-09-25)
   (aggiunti con `commands.set_channel(idx, name, bytes.fromhex(key))`).
   Chiavi: Italia `<CHIAVE_ITALIA>`, Veneto `<CHIAVE_VENETO>` (valori in `SECRETS.local.md`).
 - **Chat canali**: ricezione via `subscribe(EventType.CHANNEL_MSG_RECV, cb)` + `start_auto_message_fetching()`.
@@ -228,7 +228,10 @@ schedulato, richiesta stato ai ripetitori.
   `get_allowed_repeat_freq` (su questo nodo 433 / 869.495 / 918 MHz). TX: da −9 a `max_tx_power` (22).
 - `reboot()` non ha risposta: la connessione cade e il logger si ricollega da solo.
 - **Console** (`self_cli`, op `cli`): il companion NON ha una CLI testuale, quindi i comandi (`info`, `get/set …`,
-  `advert`, `advcheck`, `echo`, `clock`, `contacts`, `stats`, `help`…) sono tradotti in chiamate della libreria.
+  `advert`, `advcheck`, `echo`, `clock`, `contacts`, `stats`, `channels`, `channel add/del`, `help`…) sono
+  tradotti in chiamate della libreria. `channel add #nome` usa il primo slot libero tra i primi `NUM_CHANNELS`
+  (8, quelli letti dalla dashboard); per i canali `#hashtag` la chiave la ricava la libreria
+  (`sha256("#nome")[:16]`, come le app). Dopo ogni modifica rilegge i canali (`dump_channels_mc`).
 - **Eco degli advert**: `on_rx_log` riconosce negli RX log gli `ADVERT` con la nostra chiave (ritrasmessi da un
   ripetitore) e salva cosa è andato davvero in onda (posizione sì/no, salti) in meta `self_adv_echo`.
   `advcheck` = advert flood + 30 s di ascolto. Il firmware mette lat/lon in ogni advert se `adv_loc_policy≠0`.
